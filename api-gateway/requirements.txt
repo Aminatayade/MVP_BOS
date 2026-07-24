@@ -1,0 +1,21 @@
+# FILE: requirements.txt
+# DESCRIPTION: Liste toutes les dépendances et bibliothèques Python requises par l'API Gateway pour fonctionner.
+#
+# INPUTS:
+#   - N/A (Fichier de configuration textuel)
+#
+# OUTPUTS:
+#   - Utilisé par 'pip install' pour télécharger et installer les packages dans l'image Docker.
+#
+# DEPENDENCIES:
+#   - Python 3.11+
+#
+# NOTES / PRÉREQUIS:
+#   - Doit être placé dans le dossier 'api-gateway/'.
+
+fastapi==0.110.0
+uvicorn==0.28.0
+python-jose[cryptography]==3.3.0
+requests==2.31.0
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.28

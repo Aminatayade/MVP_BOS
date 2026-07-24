@@ -1,0 +1,36 @@
+# ==========================================
+# 1. Variables d'Environnement & Secrets
+# ==========================================
+.env
+*.env
+!.env.example
+
+# ==========================================
+# 2. Python & API Gateway
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+ENV/
+*.sqlite3
+
+# ==========================================
+# 3. Node.js & Frontend (React/Vite)
+# ==========================================
+node_modules/
+dist/
+dist-ssr/
+*.local
+.eslintcache
+
+# ==========================================
+# 4. Docker & System
+# ==========================================
+.docker/
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,118 @@
+# FILE: docker-compose.yml
+# DESCRIPTION: Fichier d'orchestration Docker Compose regroupant l'ensemble des conteneurs, 
+#              bases de données et microservices de la solution BOS Light MVP.
+#
+# INPUTS:
+#   - Images officielles Docker Hub / Quay.io (PostgreSQL 16, Keycloak 24)
+#   - Builds locaux via Dockerfiles relatifs (./api-gateway, ./frontend)
+#   - Variables d'environnement inter-conteneurs (Réseau Docker & Identifiants)
+#
+# OUTPUTS:
+#   - Conteneurs en cours d'exécution sur le réseau privé Docker 'default' :
+#       • bos_postgres     : BDD Identity / IAM Keycloak (Port externe 5432)
+#       • bos_postgres_app : BDD Métier applicative (Port externe 5433)
+#       • bos_keycloak     : Serveur d'authentification OIDC Keycloak (Port 8080)
+#       • bos_api_gateway  : API Gateway FastAPI (Port 8000)
+#       • bos_frontend     : Application Web React / Vite (Port 5173)
+#
+# DEPENDENCIES:
+#   - Docker Desktop / Docker Engine v20+ avec plugin Docker Compose v2+
+#
+# NOTES / PRÉREQUIS:
+#   - Lancer avec la commande : docker compose up -d --build
+#   - La résolution DNS entre conteneurs s'effectue via les noms de services (ex: keycloak, postgres-app).
+
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # BASE DE DONNÉES IDENTITY (KEYCLOAK)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: bos_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: bos_db
+      POSTGRES_USER: bos_user
+      POSTGRES_PASSWORD: bos_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # ---------------------------------------------------------------------------
+  # BASE DE DONNÉES MÉTIER (APPLICATIVE)
+  # ---------------------------------------------------------------------------
+  postgres-app:
+    image: postgres:16-alpine
+    container_name: bos_postgres_app
+    restart: always
+    environment:
+      POSTGRES_DB: bos_app_db
+      POSTGRES_USER: bos_app_user
+      POSTGRES_PASSWORD: bos_app_password
+    ports:
+      - "5433:5432"  # Redirection hôte 5433 -> port natif conteneur 5432
+    volumes:
+      - postgres_app_data:/var/lib/postgresql/data
+
+  # ---------------------------------------------------------------------------
+  # SERVEUR D'AUTHENTIFICATION & IDENTITÉ (KEYCLOAK)
+  # ---------------------------------------------------------------------------
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0.0
+    container_name: bos_keycloak
+    restart: always
+    command: start-dev
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/bos_db
+      KC_DB_USERNAME: bos_user
+      KC_DB_PASSWORD: bos_password
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+
+  # ---------------------------------------------------------------------------
+  # POINT D'ENTRÉE & API GATEWAY (FASTAPI)
+  # ---------------------------------------------------------------------------
+  api-gateway:
+    build: ./api-gateway
+    container_name: bos_api_gateway
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      # Connexion à la BDD Métier via le nom de service Docker (port natif 5432)
+      - DATABASE_URL=postgresql://bos_app_user:bos_app_password@postgres-app:5432/bos_app_db
+      # URL réseau interne Docker : pour la récupération des clés publiques JWKS par FastAPI
+      - KEYCLOAK_INTERNAL_URL=http://keycloak:8080/realms/bos-realm
+      # URL externe : pour l'authentification Swagger depuis le navigateur de l'utilisateur
+      - KEYCLOAK_EXTERNAL_URL=http://localhost:8080/realms/bos-realm
+    depends_on:
+      - keycloak
+      - postgres
+      - postgres-app
+
+  # ---------------------------------------------------------------------------
+  # INTERFACE UTILISATEUR & WEB APP (REACT / VITE)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build: ./frontend
+    container_name: bos_frontend
+    restart: always
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api-gateway
+
+# -----------------------------------------------------------------------------
+# VOLUMES PERSISTANTS POUR LES BASES DE DONNÉES
+# -----------------------------------------------------------------------------
+volumes:
+  postgres_data:
+  postgres_app_data:
