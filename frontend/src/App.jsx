@@ -27,6 +27,7 @@ import { useEffect, useState, useRef } from 'react';
 import keycloak from './services/keycloak';
 import apiClient from './services/apiClient';
 import { ProtectedRoute } from './ProtectedRoute';
+import BimExplorer from './features/bim/BimExplorer';
 
 function App() {
   const [authenticated, setAuthenticated] = useState(false);
@@ -178,6 +179,8 @@ function App() {
                 ))}
               </div>
             )}
+
+            <BimExplorer />
           </div>
         </ProtectedRoute>
       )}

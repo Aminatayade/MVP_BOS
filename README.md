@@ -66,3 +66,76 @@ Consulter les logs de l'API Gateway :
 Bash
 
 docker compose logs -f api-gateway
+
+
+1. Démarrer toute la stack Docker
+
+C:\stageBIM\bos-light-mvp
+PowerShell
+
+docker compose up -d --build
+
+
+2. Vérifier que tout tourne correctement
+
+
+docker compose ps
+
+3. Accéder aux services dans navigateur
+
+    Interface Web (React) : http://localhost:5173
+
+    API Gateway (Documentation Swagger) : http://localhost:8000/docs
+
+    Console d'administration Keycloak : http://localhost:8080
+
+Pour tout arrêter :
+
+PowerShell
+
+docker compose down
+
+Project tree: 
+```
+bos-light-mvp
+├─ api-gateway
+│  ├─ database.py
+│  ├─ Dockerfile
+│  ├─ main.py
+│  ├─ models.py
+│  └─ requirements.txt
+├─ docker-compose.yml
+├─ frontend
+│  ├─ Dockerfile
+│  ├─ eslint.config.js
+│  ├─ index.html
+│  ├─ package-lock.json
+│  ├─ package.json
+│  ├─ public
+│  │  ├─ favicon.svg
+│  │  └─ icons.svg
+│  ├─ README.md
+│  ├─ src
+│  │  ├─ App.css
+│  │  ├─ App.jsx
+│  │  ├─ assets
+│  │  │  ├─ hero.png
+│  │  │  ├─ react.svg
+│  │  │  └─ vite.svg
+│  │  ├─ components
+│  │  │  └─ ProtectedRoute.jsx
+│  │  ├─ index.css
+│  │  ├─ main.jsx
+│  │  ├─ pages
+│  │  │  ├─ Dashboard.jsx
+│  │  │  └─ Home.jsx
+│  │  ├─ ProtectedRoute.jsx
+│  │  └─ services
+│  │     ├─ apiClient.js
+│  │     └─ keycloak.js
+│  └─ vite.config.js
+├─ package-lock.json
+├─ package.json
+└─ README.md
+
+```

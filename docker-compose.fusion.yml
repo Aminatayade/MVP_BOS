@@ -1,0 +1,255 @@
+# FILE: docker-compose.fusion.yml
+# DESCRIPTION: Orchestrateur du produit fusionné bos-light-mvp + MVP-bim-integration.
+#              Ne remplace PAS docker-compose.yml (qui reste utilisable pour du
+#              dev isolé de BOS Light seul) : c'est le fichier à utiliser pour
+#              lancer l'application complète, gateway BOS Light en unique point
+#              d'entrée public côté backend.
+#
+# PRÉREQUIS DE STRUCTURE :
+#   Ce fichier attend que le dossier MVP-bim-integration soit un DOSSIER FRÈRE
+#   de bos-light-mvp (même dossier parent), ex :
+#     mon_dossier_de_travail/
+#     ├─ bos-light-mvp/          <- ce repo
+#     └─ MVP-bim-integration/
+#   Si ce n'est pas le cas, ajuste les chemins "../MVP-bim-integration/..."
+#   ci-dessous.
+#
+# SÉCURITÉ :
+#   - bim_api / timeseries_api (MVP BIM) n'ont AUCUN port publié sur l'hôte :
+#     ils ne sont atteignables que via le réseau Docker interne, donc via les
+#     routes /api/bim/* de l'API Gateway (bim_proxy.py), qui applique le RBAC
+#     Keycloak (Administrateur/Configurateur) comme le reste de l'API.
+#   - Les interfaces d'administration (ArcadeDB Studio, NATS monitoring,
+#     SeaweedFS master) sont liées à 127.0.0.1 : accessibles depuis la machine
+#     hôte pour le debug, pas depuis le reste du réseau local.
+#   - Tous les secrets (mots de passe DB/ArcadeDB/NATS/Keycloak) viennent de
+#     ./.env (gitignored) — voir .env.example. Aucune valeur par défaut n'est
+#     fournie ici pour les mots de passe : docker compose échoue explicitement
+#     si .env est absent, plutôt que de démarrer avec un secret vide.
+#
+# USAGE (depuis la racine de bos-light-mvp) :
+#   cp .env.example .env   # puis éditer les mots de passe
+#   docker compose -f docker-compose.fusion.yml up -d --build
+
+services:
+  # ---------------------------------------------------------------------------
+  # BOS Light — BDD Identity (Keycloak)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: bos_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bos_db}
+      POSTGRES_USER: ${POSTGRES_USER:-bos_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Définir POSTGRES_PASSWORD dans .env}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - fusion_network
+
+  # ---------------------------------------------------------------------------
+  # BOS Light — BDD métier applicative
+  # ---------------------------------------------------------------------------
+  postgres-app:
+    image: postgres:16-alpine
+    container_name: bos_postgres_app
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_APP_DB:-bos_app_db}
+      POSTGRES_USER: ${POSTGRES_APP_USER:-bos_app_user}
+      POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:?Définir POSTGRES_APP_PASSWORD dans .env}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_app_data:/var/lib/postgresql/data
+    networks:
+      - fusion_network
+
+  # ---------------------------------------------------------------------------
+  # BOS Light — IAM (Keycloak)
+  # ---------------------------------------------------------------------------
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0.0
+    container_name: bos_keycloak
+    restart: always
+    command: start-dev
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-bos_db}
+      KC_DB_USERNAME: ${POSTGRES_USER:-bos_user}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:?Définir POSTGRES_PASSWORD dans .env}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Définir KEYCLOAK_ADMIN_PASSWORD dans .env}
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+    networks:
+      - fusion_network
+
+  # ---------------------------------------------------------------------------
+  # BOS Light — API Gateway (point d'entrée public unique côté backend)
+  # ---------------------------------------------------------------------------
+  api-gateway:
+    build: ./api-gateway
+    container_name: bos_api_gateway
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_APP_USER:-bos_app_user}:${POSTGRES_APP_PASSWORD:?Définir POSTGRES_APP_PASSWORD dans .env}@postgres-app:5432/${POSTGRES_APP_DB:-bos_app_db}
+      - KEYCLOAK_INTERNAL_URL=http://keycloak:8080/realms/bos-realm
+      - KEYCLOAK_EXTERNAL_URL=http://localhost:8080/realms/bos-realm
+      - BIM_API_INTERNAL_URL=http://bim_api:8000
+      - TIMESERIES_API_INTERNAL_URL=http://timeseries_api:8001
+    depends_on:
+      - keycloak
+      - postgres
+      - postgres-app
+      - bim_api
+      - timeseries_api
+    networks:
+      - fusion_network
+
+  # ---------------------------------------------------------------------------
+  # BOS Light — Frontend (React / Vite), seul front actif du produit fusionné
+  # ---------------------------------------------------------------------------
+  frontend:
+    build: ./frontend
+    container_name: bos_frontend
+    restart: always
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api-gateway
+    networks:
+      - fusion_network
+
+  # ---------------------------------------------------------------------------
+  # MVP BIM — ArcadeDB (graphe BIM + moteur time-series natif)
+  # ---------------------------------------------------------------------------
+  arcadedb:
+    image: arcadedata/arcadedb:latest
+    container_name: bos_arcadedb
+    environment:
+      - JAVA_OPTS=-Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:?Définir ARCADEDB_PASSWORD dans .env} -Darcadedb.server.plugins=OpenCypher
+    ports:
+      # Admin/debug uniquement : lié à 127.0.0.1, pas au reste du réseau.
+      - "127.0.0.1:8582:8582"
+      - "127.0.0.1:2480:2480"
+      - "127.0.0.1:2424:2424"
+    networks:
+      - fusion_network
+
+  # ---------------------------------------------------------------------------
+  # MVP BIM — NATS JetStream (canal d'ingestion live/historique)
+  # ---------------------------------------------------------------------------
+  nats:
+    image: nats:latest
+    container_name: bos_nats
+    command: "-js -m 8222 --user ${NATS_USER:-bos_admin} --pass ${NATS_PASSWORD:?Définir NATS_PASSWORD dans .env}"
+    ports:
+      - "4222:4222"
+      # Monitoring uniquement : lié à 127.0.0.1.
+      - "127.0.0.1:8222:8222"
+    networks:
+      - fusion_network
+
+  # ---------------------------------------------------------------------------
+  # MVP BIM — SeaweedFS (stockage objet des maquettes IFC validées)
+  # ---------------------------------------------------------------------------
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    container_name: bos_seaweedfs
+    command: 'server -dir=/data -volume.max=5'
+    ports:
+      # Master (API/UI) admin/debug uniquement, lié à 127.0.0.1. Le port Volume
+      # HTTP (8080) n'est PAS publié : (1) il entrait en conflit avec le port
+      # hôte 8080 de Keycloak, (2) le code applicatif ne l'adresse que via le
+      # réseau Docker interne (URLs retournées par le master), jamais depuis
+      # l'hôte.
+      - "127.0.0.1:9333:9333"
+    networks:
+      - fusion_network
+
+  # ---------------------------------------------------------------------------
+  # MVP BIM — API de validation/ingestion IFC (interne uniquement, via gateway)
+  # ---------------------------------------------------------------------------
+  bim_api:
+    build: ../MVP-bim-integration/Backend/bim_validator
+    container_name: bos_bim_api
+    restart: always
+    depends_on:
+      - arcadedb
+      - seaweedfs
+      - nats
+    environment:
+      - SEAWEEDFS_MASTER_URL=http://seaweedfs:9333
+      - ARCADEDB_BASE_URL=http://arcadedb:2480
+      - ARCADEDB_DATABASE=bim
+      - ARCADEDB_USERNAME=root
+      - ARCADEDB_PASSWORD=${ARCADEDB_PASSWORD:?Définir ARCADEDB_PASSWORD dans .env}
+      - NATS_URL=nats://nats:4222
+      - NATS_USER=${NATS_USER:-bos_admin}
+      - NATS_PASSWORD=${NATS_PASSWORD:?Définir NATS_PASSWORD dans .env}
+    # Pas de "ports:" : uniquement joignable via le réseau Docker interne
+    # (résolution DNS "bim_api"), donc uniquement via l'API Gateway.
+    entrypoint: ["python", "api_server.py"]
+    networks:
+      - fusion_network
+
+  # ---------------------------------------------------------------------------
+  # MVP BIM — API TimeSeries (interne uniquement, via gateway)
+  # ---------------------------------------------------------------------------
+  timeseries_api:
+    build: ../MVP-bim-integration/Backend/bim_validator
+    container_name: bos_timeseries_api
+    restart: always
+    depends_on:
+      - arcadedb
+      - nats
+    environment:
+      - ARCADEDB_BASE_URL=http://arcadedb:2480
+      - ARCADEDB_DATABASE=bim
+      - ARCADEDB_USERNAME=root
+      - ARCADEDB_PASSWORD=${ARCADEDB_PASSWORD:?Définir ARCADEDB_PASSWORD dans .env}
+      - NATS_URL=nats://nats:4222
+      - NATS_USER=${NATS_USER:-bos_admin}
+      - NATS_PASSWORD=${NATS_PASSWORD:?Définir NATS_PASSWORD dans .env}
+    # Pas de "ports:" : idem bim_api, joignable uniquement via le réseau interne.
+    entrypoint: ["uvicorn", "timeseries_api:app", "--host", "0.0.0.0", "--port", "8001"]
+    networks:
+      - fusion_network
+
+  # ---------------------------------------------------------------------------
+  # MVP BIM — CLI de validation IFC one-shot (pas de service continu)
+  # Usage ponctuel : docker compose -f docker-compose.fusion.yml run --rm bim_validator archi:maquettes/xxx.ifc
+  # ---------------------------------------------------------------------------
+  bim_validator:
+    build: ../MVP-bim-integration/Backend/bim_validator
+    container_name: bos_bim_validator
+    profiles: ["tools"]
+    environment:
+      - SEAWEEDFS_MASTER_URL=http://seaweedfs:9333
+      - ARCADEDB_BASE_URL=http://arcadedb:2480
+      - ARCADEDB_DATABASE=bim
+      - ARCADEDB_USERNAME=root
+      - ARCADEDB_PASSWORD=${ARCADEDB_PASSWORD:?Définir ARCADEDB_PASSWORD dans .env}
+      - NATS_URL=nats://nats:4222
+      - NATS_USER=${NATS_USER:-bos_admin}
+      - NATS_PASSWORD=${NATS_PASSWORD:?Définir NATS_PASSWORD dans .env}
+    volumes:
+      - ../MVP-bim-integration/Backend/bim_validator/maquettes:/app/maquettes
+    networks:
+      - fusion_network
+
+networks:
+  fusion_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  postgres_app_data:
