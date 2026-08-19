@@ -38,7 +38,20 @@ function runLayout(cy: Core) {
   // viewport courant avec le layout LR : on recadre systématiquement une fois
   // le layout terminé, sinon "rien ne se passe" visuellement alors que les
   // nœuds sont bien là, juste hors cadre.
-  cy.one('layoutstop', () => cy.fit(cy.elements(), 40))
+  cy.one('layoutstop', () => {
+    cy.fit(cy.elements(), 40)
+    // Avec peu d'éléments (typiquement un seul nœud Building au premier
+    // affichage), fit() vise un zoom qui dépasse largement maxZoom (8) et se
+    // fait plafonner -- mais ce plafonnage désynchronise le cadrage affiché
+    // de la zone réellement cliquable (les taps atterrissent sur le "fond"
+    // même en cliquant visuellement sur le nœud). On limite donc le zoom
+    // effectif à une valeur confortable et on recentre proprement dessus.
+    const MAX_COMFORTABLE_ZOOM = 2.5
+    if (cy.zoom() > MAX_COMFORTABLE_ZOOM) {
+      cy.zoom({ level: MAX_COMFORTABLE_ZOOM, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } })
+      cy.center(cy.elements())
+    }
+  })
   // cytoscape-dagre n'a pas de types officiels (déclaré `any` dans
   // types/cytoscape-dagre.d.ts) : les types du cœur cytoscape ne connaissent
   // pas `animationDuration` sur un layout nommé "dagre", d'où le cast.
@@ -239,14 +252,10 @@ export default function BimGraphViewer({
 
       cyRef.current = cy
 
-      // Cytoscape ne se redimensionne JAMAIS tout seul : si le conteneur
+      // Cytoscape ne se redimensionne jamais tout seul si son conteneur
       // change de taille après cette création (ex: police Google Fonts qui
       // finit de charger après le premier rendu et décale légèrement l'en-
-      // tête), le repère de coordonnées interne de Cytoscape reste basé sur
-      // l'ancienne taille. Les clics semblent alors rater systématiquement
-      // les nœuds : visuellement au bon endroit, mais Cytoscape les reçoit
-      // comme un clic dans le vide (event.target === cy). cy.resize()
-      // recalcule ce repère à chaque changement de taille réel.
+      // tête) : sans ça, canvas et zone cliquable finissent désynchronisés.
       resizeObserver = new ResizeObserver(() => {
         cyRef.current?.resize()
       })
