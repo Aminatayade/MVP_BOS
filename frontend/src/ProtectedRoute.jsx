@@ -33,36 +33,16 @@ export const ProtectedRoute = ({ keycloak, children }) => {
   // Écran d'interdiction d'accès (Cas du rôle Client)
   if (!hasAccess) {
     return (
-      <div 
-        style={{ 
-          padding: '30px', 
-          marginTop: '20px', 
-          textAlign: 'center', 
-          backgroundColor: '#fff5f5', 
-          border: '1px solid #feb2b2', 
-          borderRadius: '8px' 
-        }}
-      >
-        <h2 style={{ color: '#c53030', margin: '0 0 10px 0' }}>🚫 Accès Refusé</h2>
-        <p style={{ color: '#4a5568', fontSize: '15px' }}>
+      <div className="access-denied">
+        <h2 style={{ color: 'var(--danger)', marginBottom: 10 }}>Accès refusé</h2>
+        <p style={{ color: 'var(--gray-700)', fontSize: 14 }}>
           Vous êtes connecté en tant que <strong>{keycloak.tokenParsed?.preferred_username}</strong>.
         </p>
-        <p style={{ color: '#718096', fontSize: '14px' }}>
-          Votre rôle actuel ne vous permet pas d'accéder à cette application de configuration.<br />
+        <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>
+          Votre rôle actuel ne vous permet pas d'accéder à cette application de configuration.
           Seuls les utilisateurs disposant des rôles <strong>Administrateur</strong> ou <strong>Configurateur</strong> sont autorisés.
         </p>
-        <button 
-          onClick={() => keycloak.logout()} 
-          style={{ 
-            marginTop: '15px', 
-            padding: '8px 16px', 
-            backgroundColor: '#e53e3e', 
-            color: 'white', 
-            border: 'none', 
-            borderRadius: '5px', 
-            cursor: 'pointer' 
-          }}
-        >
+        <button className="btn btn-danger" style={{ marginTop: 16 }} onClick={() => keycloak.logout()}>
           Se déconnecter
         </button>
       </div>

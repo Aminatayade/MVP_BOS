@@ -74,7 +74,7 @@ function App() {
    */
   const testApiGateway = async () => {
     try {
-      const response = await apiClient.get('/api/config-access'); 
+      const response = await apiClient.get('/api/config-access');
       setApiResponse(JSON.stringify(response.data, null, 2));
     } catch (error) {
       setApiResponse(`Erreur (${error.response?.status || 'Inconnue'}) : ${JSON.stringify(error.response?.data || error.message)}`);
@@ -82,108 +82,99 @@ function App() {
   };
 
   return (
-    <div style={{ padding: '40px', fontFamily: 'Arial, sans-serif', maxWidth: '1000px', margin: '0 auto' }}>
-      <h1>🚀 BOS Light - Application Web</h1>
-      <hr style={{ margin: '20px 0' }} />
-
-      {!authenticated ? (
-        <div>
-          <p>Vous n'êtes pas connecté.</p>
-          <button 
-            onClick={() => keycloak.login()}
-            style={{ padding: '10px 20px', fontSize: '16px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}
-          >
-            Se connecter avec Keycloak
-          </button>
+    <div className="page">
+      <header className="navbar">
+        <div className="navbar__brand">
+          <span className="navbar__brand-mark">B</span>
+          BOS Light
         </div>
-      ) : (
-        <ProtectedRoute keycloak={keycloak}>
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <p>🟢 Connecté en tant que : <strong>{keycloak.tokenParsed?.preferred_username}</strong></p>
-              <div>
-                <button 
-                  onClick={testApiGateway} 
-                  style={{ padding: '8px 15px', marginRight: '10px', fontSize: '14px', cursor: 'pointer' }}
-                >
-                  Tester l'accès API
-                </button>
-                
-                <button 
-                  onClick={() => keycloak.logout()} 
-                  style={{ padding: '8px 15px', fontSize: '14px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}
-                >
-                  Se déconnecter
-                </button>
-              </div>
-            </div>
-
-            {/* Affichage de la réponse de test API Gateway */}
-            {apiResponse && (
-              <div style={{ marginTop: '20px' }}>
-                <h3>Réponse de l'API Gateway :</h3>
-                <pre style={{ background: '#222', color: '#00ff00', padding: '15px', borderRadius: '5px', overflowX: 'auto' }}>
-                  {apiResponse}
-                </pre>
-              </div>
-            )}
-
-            <hr style={{ margin: '30px 0' }} />
-
-            {/* Section d'affichage dynamique des cartouches BDD */}
-            <h2>📌 Cartouches & Workflow du Projet</h2>
-            
-            {loadingPhases ? (
-              <p>Chargement des phases métier depuis la BDD...</p>
-            ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', marginTop: '20px' }}>
-                {phases.map((phase) => (
-                  <div 
-                    key={phase.id} 
-                    style={{ 
-                      border: '1px solid #ccc', 
-                      borderRadius: '8px', 
-                      padding: '20px', 
-                      backgroundColor: '#f9f9f9',
-                      boxShadow: '0 2px 5px rgba(0,0,0,0.05)'
-                    }}
-                  >
-                    <span 
-                      style={{ 
-                        backgroundColor: phase.badge_color || '#007bff', 
-                        color: 'white', 
-                        padding: '4px 10px', 
-                        borderRadius: '12px', 
-                        fontSize: '12px', 
-                        fontWeight: 'bold' 
-                      }}
-                    >
-                      {phase.nom}
-                    </span>
-                    
-                    <h3 style={{ marginTop: '15px', marginBottom: '10px' }}>{phase.titre}</h3>
-                    <p style={{ fontSize: '14px', color: '#555' }}>{phase.description}</p>
-                    
-                    <h4 style={{ fontSize: '13px', marginTop: '15px', marginBottom: '5px' }}>Points clés :</h4>
-                    <ul style={{ paddingLeft: '20px', fontSize: '13px' }}>
-                      {phase.cartouche_points?.map((point, idx) => (
-                        <li key={idx}>{point}</li>
-                      ))}
-                    </ul>
-
-                    <div style={{ marginTop: '20px', padding: '10px', backgroundColor: '#eef2ff', borderRadius: '5px', borderLeft: `4px solid ${phase.badge_color}` }}>
-                      <strong style={{ fontSize: '13px', color: '#333' }}>{phase.etape_nom}</strong>
-                      <p style={{ fontSize: '12px', color: '#666', margin: '5px 0 0 0' }}>{phase.livrables}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <BimExplorer />
+        {authenticated && (
+          <div className="navbar__user">
+            <span>
+              Connecté en tant que <strong>{keycloak.tokenParsed?.preferred_username}</strong>
+            </span>
+            <button className="btn btn-ghost btn-sm" style={{ color: '#cbd8e8' }} onClick={testApiGateway}>
+              Tester l'accès API
+            </button>
+            <button className="btn btn-outline btn-sm" style={{ background: 'transparent', color: '#cbd8e8', borderColor: '#2c4c6c' }} onClick={() => keycloak.logout()}>
+              Se déconnecter
+            </button>
           </div>
-        </ProtectedRoute>
-      )}
+        )}
+      </header>
+
+      <main className="content">
+        {!authenticated ? (
+          <div className="card card--pad login-panel">
+            <h2 style={{ marginBottom: 8 }}>Bienvenue</h2>
+            <p className="muted" style={{ marginBottom: 20 }}>
+              Connectez-vous avec votre compte Keycloak pour accéder au configurateur.
+            </p>
+            <button className="btn btn-primary" style={{ width: '100%' }} onClick={() => keycloak.login()}>
+              Se connecter avec Keycloak
+            </button>
+          </div>
+        ) : (
+          <ProtectedRoute keycloak={keycloak}>
+            <div>
+              {apiResponse && (
+                <div className="section card card--pad">
+                  <h3 style={{ fontSize: 14, marginBottom: 10 }}>Réponse de l'API Gateway</h3>
+                  <pre style={{
+                    background: 'var(--navy-900)', color: '#8fe3b0', padding: '14px',
+                    borderRadius: 'var(--radius-sm)', overflowX: 'auto', fontSize: 12, margin: 0,
+                  }}>
+                    {apiResponse}
+                  </pre>
+                </div>
+              )}
+
+              <section className="section">
+                <div className="section-header">
+                  <div>
+                    <div className="eyebrow">Workflow du projet</div>
+                    <h2>Cartouches &amp; étapes</h2>
+                  </div>
+                </div>
+
+                {loadingPhases ? (
+                  <p className="muted">Chargement des phases métier…</p>
+                ) : (
+                  <div className="phase-grid">
+                    {phases.map((phase) => (
+                      <div key={phase.id} className="phase-card">
+                        <div className="phase-card__bar" style={{ background: phase.badge_color || 'var(--blue-500)' }} />
+                        <div className="phase-card__body">
+                          <span className="badge" style={{ background: phase.badge_color || 'var(--blue-500)', alignSelf: 'flex-start' }}>
+                            {phase.nom}
+                          </span>
+                          <h3 className="phase-card__title">{phase.titre}</h3>
+                          <p className="phase-card__desc">{phase.description}</p>
+
+                          <ul className="phase-card__points">
+                            {phase.cartouche_points?.map((point, idx) => (
+                              <li key={idx}>{point}</li>
+                            ))}
+                          </ul>
+
+                          <div className="phase-card__footer">
+                            <strong>{phase.etape_nom}</strong>
+                            <p>{phase.livrables}</p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              <section className="section">
+                <BimExplorer />
+              </section>
+            </div>
+          </ProtectedRoute>
+        )}
+      </main>
     </div>
   );
 }

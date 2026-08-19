@@ -8,7 +8,7 @@
  *              déjà en place côté ProtectedRoute.
  */
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import BimGraphViewer from './components/BimGraphViewer'
 import NodeInspector from './components/NodeInspector'
 import { getBuildings, ingestBatch } from './services/arcadeApi'
@@ -74,6 +74,64 @@ type SelectedFile = {
   discipline: string
 }
 
+/**
+ * Un dépôt de DOSSIER (pas juste des fichiers) via glisser-déposer n'apparaît
+ * pas directement dans dataTransfer.files : il faut parcourir manuellement
+ * l'arborescence via l'API FileSystemEntry (webkitGetAsEntry), fichier par
+ * fichier, sous-dossier par sous-dossier.
+ */
+async function collectFilesFromDataTransfer(dataTransfer: DataTransfer): Promise<File[]> {
+  const items = Array.from(dataTransfer.items || [])
+  const collected: File[] = []
+
+  async function readDirectory(entry: FileSystemDirectoryEntry): Promise<FileSystemEntry[]> {
+    const reader = entry.createReader()
+    const all: FileSystemEntry[] = []
+    // readEntries ne renvoie pas forcément tout en un seul appel
+    // (limite interne du navigateur) : on boucle jusqu'à un lot vide.
+    let batch: FileSystemEntry[]
+    do {
+      batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject))
+      all.push(...batch)
+    } while (batch.length > 0)
+    return all
+  }
+
+  async function walk(entry: FileSystemEntry | null): Promise<void> {
+    if (!entry) return
+    if (entry.isFile) {
+      const file = await new Promise<File>((resolve, reject) =>
+        (entry as FileSystemFileEntry).file(resolve, reject),
+      )
+      collected.push(file)
+    } else if (entry.isDirectory) {
+      const children = await readDirectory(entry as FileSystemDirectoryEntry)
+      for (const child of children) {
+        await walk(child)
+      }
+    }
+  }
+
+  const hasEntrySupport = items.length > 0 && typeof items[0].webkitGetAsEntry === 'function'
+
+  if (hasEntrySupport) {
+    for (const item of items) {
+      const entry = item.webkitGetAsEntry?.()
+      if (entry) {
+        await walk(entry)
+      } else if (item.kind === 'file') {
+        const file = item.getAsFile()
+        if (file) collected.push(file)
+      }
+    }
+    return collected
+  }
+
+  // Navigateur sans support de l'API FileSystemEntry : fallback simple,
+  // ne fonctionne que pour un dépôt de fichiers (pas de dossier).
+  return Array.from(dataTransfer.files || [])
+}
+
 export default function BimExplorer() {
   const [open, setOpen] = useState(false)
   const [defaultDiscipline, setDefaultDiscipline] = useState('ARCHI')
@@ -85,14 +143,53 @@ export default function BimExplorer() {
   const [showVisualizer, setShowVisualizer] = useState(false)
   const [visualElements, setVisualElements] = useState<CytoscapeElement[]>([])
   const [selectedNodeInfo, setSelectedNodeInfo] = useState<any | null>(null)
+  const [dragActive, setDragActive] = useState(false)
+  const dragCounter = useRef(0)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? [])
+  const addFiles = (files: File[]) => {
+    const ifcFiles = files.filter((f) => f.name.toLowerCase().endsWith('.ifc'))
+    if (ifcFiles.length === 0) {
+      setStatus(files.length === 0 ? 'Aucun fichier détecté.' : 'Aucun fichier .ifc trouvé dans la sélection.')
+      return
+    }
     setSelectedFiles((prev) => [
       ...prev,
-      ...files.map((file) => ({ file, discipline: defaultDiscipline })),
+      ...ifcFiles.map((file) => ({ file, discipline: defaultDiscipline })),
     ])
+    setStatus(
+      ifcFiles.length < files.length
+        ? `${ifcFiles.length} fichier(s) .ifc ajouté(s) (${files.length - ifcFiles.length} fichier(s) ignoré(s) : extension non .ifc).`
+        : `${ifcFiles.length} fichier(s) ajouté(s).`,
+    )
+  }
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    addFiles(Array.from(event.target.files ?? []))
     event.target.value = ''
+  }
+
+  const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    dragCounter.current = 0
+    setDragActive(false)
+    const files = await collectFilesFromDataTransfer(event.dataTransfer)
+    addFiles(files)
+  }
+
+  const handleDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    dragCounter.current += 1
+    setDragActive(true)
+  }
+
+  const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    dragCounter.current -= 1
+    if (dragCounter.current <= 0) {
+      dragCounter.current = 0
+      setDragActive(false)
+    }
   }
 
   const updateFileDiscipline = (index: number, discipline: string) => {
@@ -163,60 +260,46 @@ export default function BimExplorer() {
 
   if (!open) {
     return (
-      <section style={{ marginTop: '30px' }}>
-        <div
-          style={{
-            border: '1px solid #ccc',
-            borderRadius: '8px',
-            padding: '20px',
-            backgroundColor: '#f9f9f9',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
+      <div className="card card--pad" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
+        <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+          <div style={{
+            width: 40, height: 40, borderRadius: 10, background: 'var(--blue-50)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+          }}>
+            <BimIcon />
+          </div>
           <div>
-            <h2 style={{ margin: '0 0 6px 0' }}>🗺️ Explorateur BIM</h2>
-            <p style={{ margin: 0, fontSize: '14px', color: '#555' }}>
-              Chargez des maquettes IFC (par discipline) et explorez le graphe bâtiment / étages / pièces / équipements.
+            <h3 style={{ fontSize: 15, marginBottom: 3 }}>Explorateur BIM</h3>
+            <p className="muted" style={{ fontSize: 13 }}>
+              Chargez des maquettes IFC et explorez le graphe bâtiment / étages / pièces / équipements.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setOpen(true)}
-            style={{ padding: '10px 20px', fontSize: '14px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}
-          >
-            Ouvrir l'explorateur
-          </button>
         </div>
-      </section>
+        <button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>
+          Ouvrir l'explorateur
+        </button>
+      </div>
     )
   }
 
   if (showVisualizer) {
     return (
-      <div style={{ position: 'fixed', inset: 0, background: '#0b1120', color: '#f8fafc', display: 'flex', flexDirection: 'column', zIndex: 1000 }}>
-        <header
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '1rem 1.5rem',
-            borderBottom: '1px solid #1f2937',
-          }}
-        >
+      <div className="explorer-overlay">
+        <header className="explorer-overlay__header">
           <div>
-            <h2 style={{ margin: 0 }}>Explorateur de graphe</h2>
-            <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: 14 }}>{status}</p>
+            <h2 style={{ color: 'var(--white)', fontSize: 17 }}>Explorateur de graphe</h2>
+            <p style={{ margin: '4px 0 0', fontSize: 13 }}>{status}</p>
           </div>
           <button
             type="button"
+            className="btn btn-outline btn-sm"
+            style={{ background: 'transparent', color: 'var(--white)', borderColor: '#2c4c6c' }}
             onClick={() => { setShowVisualizer(false); setVisualElements([]); setSelectedNodeInfo(null) }}
           >
             ← Retour à l'upload
           </button>
         </header>
-        <div style={{ flex: 1, display: 'flex', gap: 12, padding: 12, minHeight: 0, minWidth: 0 }}>
+        <div style={{ flex: 1, display: 'flex', gap: 12, padding: 16, minHeight: 0, minWidth: 0 }}>
           {/* minWidth/minHeight: 0 indispensables ici : un flex-item vaut par
               défaut min-width/min-height "auto", donc refuse de rétrécir en
               dessous de la taille intrinsèque de son contenu. Le canvas
@@ -232,7 +315,7 @@ export default function BimExplorer() {
               height="100%"
             />
           </div>
-          <div style={{ width: 380, flexShrink: 0, background: '#1f2937', borderRadius: 8, overflow: 'auto' }}>
+          <div className="inspector-panel" style={{ width: 380, flexShrink: 0 }}>
             <NodeInspector node={selectedNodeInfo} onClose={() => setSelectedNodeInfo(null)} />
           </div>
         </div>
@@ -241,75 +324,77 @@ export default function BimExplorer() {
   }
 
   return (
-    <section style={{ marginTop: '30px', border: '1px solid #ccc', borderRadius: '8px', padding: '20px', backgroundColor: '#f9f9f9' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+    <div className="card card--pad">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
         <div>
-          <h2 style={{ margin: '0 0 6px 0' }}>🗺️ Explorateur BIM</h2>
-          <p style={{ margin: 0, fontSize: '14px', color: '#555', maxWidth: 640 }}>
+          <div className="eyebrow">Import & validation</div>
+          <h2 style={{ fontSize: 17, marginBottom: 6 }}>Explorateur BIM</h2>
+          <p className="muted" style={{ fontSize: 13, maxWidth: 560 }}>
             Chargez autant de maquettes IFC que vous voulez pour un même bâtiment — une par discipline
             ou plusieurs à la fois — puis laissez le backend valider et ingérer chaque fichier selon sa
             propre discipline.
           </p>
         </div>
-        <button type="button" onClick={() => setOpen(false)} style={{ padding: '6px 12px', fontSize: '13px', cursor: 'pointer' }}>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setOpen(false)}>
           Fermer
         </button>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginTop: '20px' }}>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
-          <span>Discipline par défaut (nouveaux fichiers)</span>
-          <select value={defaultDiscipline} onChange={(event) => setDefaultDiscipline(event.target.value)}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+        <div className="field">
+          <label>Discipline par défaut (nouveaux fichiers)</label>
+          <select className="input" value={defaultDiscipline} onChange={(event) => setDefaultDiscipline(event.target.value)}>
             {disciplines.map((option) => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </select>
-          <small style={{ color: '#777' }}>Modifiable individuellement dans la liste ci-dessous.</small>
-        </label>
+          <small>Modifiable individuellement dans la liste ci-dessous.</small>
+        </div>
 
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
-          <span>Zone / Bâtiment</span>
+        <div className="field">
+          <label>Zone / Bâtiment</label>
           <input
             type="text"
+            className="input"
             placeholder='ex: "Batiment A", "Parking B"'
             value={zone}
             onChange={(event) => setZone(event.target.value)}
           />
-          <small style={{ color: '#777' }}>Sert à rattacher les équipements au bon Room/Floor.</small>
-        </label>
+          <small>Sert à rattacher les équipements au bon Room/Floor.</small>
+        </div>
+      </div>
 
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
-          <span>Fichier(s) IFC</span>
-          <input type="file" accept=".ifc" multiple onChange={handleFileChange} />
-          <small style={{ color: '#777' }}>
-            {selectedFiles.length === 0 ? 'Aucun fichier choisi' : `${selectedFiles.length} fichier(s) sélectionné(s)`}
-          </small>
-        </label>
+      <div
+        className={dragActive ? 'dropzone dropzone--active' : 'dropzone'}
+        style={{ marginTop: 18 }}
+        onClick={() => fileInputRef.current?.click()}
+        onDragEnter={handleDragEnter}
+        onDragOver={(event) => event.preventDefault()}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        <span className="dropzone__icon"><UploadIcon /></span>
+        <span className="dropzone__title">Cliquez pour importer, ou glissez-déposez vos fichiers/dossier IFC ici</span>
+        <span className="dropzone__hint">Fichiers .ifc uniquement — un dossier déposé est parcouru automatiquement</span>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".ifc"
+          multiple
+          onChange={handleFileChange}
+          style={{ display: 'none' }}
+        />
       </div>
 
       <div style={{ marginTop: '16px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-        <button
-          type="button"
-          onClick={handleSubmit}
-          disabled={selectedFiles.length === 0 || loading}
-          style={{ padding: '10px 20px', fontSize: '14px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}
-        >
+        <button type="button" className="btn btn-primary" onClick={handleSubmit} disabled={selectedFiles.length === 0 || loading}>
           {loading ? 'Analyse en cours…' : 'Valider les maquettes'}
         </button>
-        <button
-          type="button"
-          onClick={openVisualizer}
-          style={{ padding: '10px 20px', fontSize: '14px', cursor: 'pointer' }}
-        >
+        <button type="button" className="btn btn-outline" onClick={openVisualizer}>
           Visualiser graphe
         </button>
         {selectedFiles.length > 0 && (
-          <button
-            type="button"
-            onClick={() => setSelectedFiles([])}
-            disabled={loading}
-            style={{ padding: '10px 20px', fontSize: '14px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}
-          >
+          <button type="button" className="btn btn-danger" onClick={() => setSelectedFiles([])} disabled={loading}>
             Réinitialiser
           </button>
         )}
@@ -317,61 +402,58 @@ export default function BimExplorer() {
 
       {selectedFiles.length > 0 && (
         <div style={{ marginTop: '16px' }}>
-          <small style={{ color: '#666' }}>Fichiers sélectionnés (discipline modifiable par fichier) :</small>
-          <ul style={{ listStyle: 'none', padding: 0, margin: '8px 0 0' }}>
+          <small className="muted">Fichiers sélectionnés (discipline modifiable par fichier) :</small>
+          <div style={{ marginTop: 8 }}>
             {selectedFiles.map(({ file, discipline }, index) => (
-              <li key={`${file.name}-${index}`} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: 6 }}>
-                <span style={{ flex: 1, fontSize: 13 }}>{file.name}</span>
-                <select value={discipline} onChange={(event) => updateFileDiscipline(index, event.target.value)}>
+              <div className="file-row" key={`${file.name}-${index}`}>
+                <span className="file-row__name">{file.name}</span>
+                <select className="input" style={{ width: 'auto', padding: '5px 8px', fontSize: 12.5 }} value={discipline} onChange={(event) => updateFileDiscipline(index, event.target.value)}>
                   {disciplines.map((option) => (
                     <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
                 </select>
-                <button
-                  type="button"
-                  onClick={() => setSelectedFiles(selectedFiles.filter((_, i) => i !== index))}
-                  style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', padding: '0 0.25rem', fontSize: '1.1rem' }}
-                >
+                <button type="button" className="file-row__remove" onClick={() => setSelectedFiles(selectedFiles.filter((_, i) => i !== index))}>
                   ✕
                 </button>
-              </li>
+              </div>
             ))}
-          </ul>
+          </div>
         </div>
       )}
 
-      <p style={{ marginTop: '16px', fontSize: 13, color: '#333' }}>{status}</p>
+      {status && <p className="status-banner">{status}</p>}
 
       {batchResults && (
-        <section style={{ marginTop: '16px' }}>
-          <h3 style={{ fontSize: 15 }}>Résultats du batch ({batchResults.results.length} fichier(s))</h3>
+        <section style={{ marginTop: '10px' }}>
+          <h3 style={{ fontSize: 14, marginBottom: 10 }}>Résultats du batch ({batchResults.results.length} fichier(s))</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {batchResults.results.map((item) => {
               const isError = 'error' in item.result
               const isIngestion = !isError && 'validation_storage' in item.result
               const validationResult = !isError && !isIngestion ? (item.result as ValidationResult) : null
               const ingestionResult = isIngestion ? (item.result as IngestionResult) : null
+              const ok = isIngestion || (validationResult?.success ?? false)
 
               return (
-                <div key={item.filename} style={{ border: '1px solid #ddd', borderRadius: 6, padding: 12, background: 'white' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600 }}>
+                <div key={item.filename} className={`result-card ${isError ? 'result-card--error' : ok ? 'result-card--ok' : 'result-card--error'}`}>
+                  <div className="result-card__head">
                     <span>{item.filename}</span>
                     {isError ? (
-                      <span style={{ color: '#dc3545' }}>Erreur</span>
+                      <span className="badge-outline badge-outline--error">Erreur</span>
                     ) : isIngestion ? (
-                      <span style={{ color: '#10b981' }}>Terminée</span>
+                      <span className="badge-outline badge-outline--ok">Terminée</span>
                     ) : (
-                      <span style={{ color: validationResult!.success ? '#10b981' : '#dc3545' }}>
+                      <span className={`badge-outline ${validationResult!.success ? 'badge-outline--ok' : 'badge-outline--error'}`}>
                         {validationResult!.success ? 'Conforme' : 'Rejetée'}
                       </span>
                     )}
                   </div>
 
-                  {isError && <p style={{ color: '#dc3545', fontSize: 12 }}>{(item.result as any).error}</p>}
+                  {isError && <p style={{ color: 'var(--danger)', fontSize: 12, marginTop: 6 }}>{(item.result as any).error}</p>}
 
                   {isIngestion && (
                     <>
-                      <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#555', marginTop: 6 }}>
+                      <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--gray-600)', marginTop: 6 }}>
                         <span>
                           Validation/stockage:{' '}
                           {'success' in ingestionResult!.validation_storage
@@ -381,12 +463,12 @@ export default function BimExplorer() {
                         <span>Graphe: {(ingestionResult!.graph_ingestion as any).status}</span>
                       </div>
                       {'message' in ingestionResult!.graph_ingestion && (
-                        <p style={{ fontSize: 12, color: '#555', marginTop: 4 }}>{ingestionResult!.graph_ingestion.message}</p>
+                        <p style={{ fontSize: 12, color: 'var(--gray-600)', marginTop: 4 }}>{ingestionResult!.graph_ingestion.message}</p>
                       )}
                       {'unmatched_equipment_count' in ingestionResult!.graph_ingestion &&
                         ingestionResult!.graph_ingestion.unmatched_equipment_count > 0 && (
-                          <p style={{ fontSize: 12, color: '#b45309', marginTop: 4 }}>
-                            ⚠️ {ingestionResult!.graph_ingestion.unmatched_equipment_count} /{' '}
+                          <p style={{ fontSize: 12, color: 'var(--warning)', marginTop: 4 }}>
+                            {ingestionResult!.graph_ingestion.unmatched_equipment_count} /{' '}
                             {ingestionResult!.graph_ingestion.equipment_count} équipement(s) non rattaché(s).
                           </p>
                         )}
@@ -398,7 +480,7 @@ export default function BimExplorer() {
                       {validationResult.errors.length > 0 && (
                         <div style={{ marginTop: 6 }}>
                           <strong style={{ fontSize: 12 }}>Erreurs ({validationResult.errors.length})</strong>
-                          <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12, color: '#dc3545' }}>
+                          <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12, color: 'var(--danger)' }}>
                             {validationResult.errors.map((msg) => <li key={msg}>{msg}</li>)}
                           </ul>
                         </div>
@@ -406,7 +488,7 @@ export default function BimExplorer() {
                       {validationResult.warnings.length > 0 && (
                         <div style={{ marginTop: 6 }}>
                           <strong style={{ fontSize: 12 }}>Avertissements ({validationResult.warnings.length})</strong>
-                          <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12, color: '#b45309' }}>
+                          <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12, color: 'var(--warning)' }}>
                             {validationResult.warnings.map((msg) => <li key={msg}>{msg}</li>)}
                           </ul>
                         </div>
@@ -419,6 +501,27 @@ export default function BimExplorer() {
           </div>
         </section>
       )}
-    </section>
+    </div>
+  )
+}
+
+function BimIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--blue-500)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 21h18" />
+      <path d="M5 21V7l8-4v18" />
+      <path d="M19 21V11l-6-4" />
+      <path d="M9 9v.01M9 12v.01M9 15v.01M9 18v.01" />
+    </svg>
+  )
+}
+
+function UploadIcon() {
+  return (
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+      <path d="M7 9l5-5 5 5" />
+      <path d="M12 4v12" />
+    </svg>
   )
 }

@@ -47,82 +47,84 @@ export default function NodeInspector({ node, onClose, onExpand, onCollapse }: P
     return () => { cancelled = true }
   }, [node])
 
-  if (!node) return <div className="p-4 text-sm text-gray-300">Cliquez sur un nœud pour voir les détails.</div>
+  if (!node) {
+    return (
+      <div className="inspector">
+        <p className="muted" style={{ fontSize: 13 }}>Cliquez sur un nœud pour voir les détails.</p>
+      </div>
+    )
+  }
 
   const psets = node.psets || node.properties || {}
 
   return (
-    <div className="p-4 text-sm text-gray-100">
-      <div className="flex justify-between items-start">
+    <div className="inspector">
+      <div className="inspector__head">
         <div>
-          <h3 className="text-lg font-semibold">{node.label || node.name || node.id}</h3>
-          <p className="text-xs text-gray-400">{node.type || node.ifc_type}</p>
+          <h3 className="inspector__title">{node.label || node.name || node.id}</h3>
+          <p className="inspector__subtitle">{node.type || node.ifc_type}</p>
         </div>
-        <div className="flex gap-2">
+        <div className="inspector__actions">
           {onExpand && (
-            <button onClick={() => onExpand(node.id)} className="px-2 py-1 bg-blue-600 rounded text-xs">Expand</button>
+            <button className="btn btn-outline btn-sm" onClick={() => onExpand(node.id)}>Déplier</button>
           )}
           {onCollapse && (
-            <button onClick={() => onCollapse(node.id)} className="px-2 py-1 bg-gray-600 rounded text-xs">Collapse</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => onCollapse(node.id)}>Replier</button>
           )}
           {onClose && (
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-200">✕</button>
+            <button className="inspector__close" onClick={onClose}>✕</button>
           )}
         </div>
       </div>
 
-      <div className="mt-3">
-        <dl className="text-xs text-gray-300">
-          <dt className="font-medium">Global ID</dt>
-          <dd className="mb-2">{node.id}</dd>
-
+      <div className="inspector__section">
+        <dl style={{ margin: 0 }}>
+          <div className="inspector__row">
+            <dt>Global ID</dt>
+            <dd>{node.id}</dd>
+          </div>
           {node.name && (
-            <>
-              <dt className="font-medium">Name</dt>
-              <dd className="mb-2">{node.name}</dd>
-            </>
+            <div className="inspector__row">
+              <dt>Name</dt>
+              <dd>{node.name}</dd>
+            </div>
           )}
-
           {node.ifc_type && (
-            <>
-              <dt className="font-medium">IFC Type</dt>
-              <dd className="mb-2">{node.ifc_type}</dd>
-            </>
+            <div className="inspector__row">
+              <dt>IFC Type</dt>
+              <dd>{node.ifc_type}</dd>
+            </div>
           )}
         </dl>
       </div>
 
-      <div className="mt-4">
-        <h4 className="text-sm font-semibold">Property Sets</h4>
-        <div className="mt-2 max-h-64 overflow-auto text-xs">
-          {Object.keys(psets).length === 0 && <div className="text-gray-400">Aucun Pset trouvé</div>}
-          {Object.entries(psets).map(([k, v]) => (
-            <div key={k} className="mb-2">
-              <div className="text-gray-300 font-medium">{k}</div>
-              <div className="text-gray-400">{JSON.stringify(v)}</div>
-            </div>
-          ))}
-        </div>
+      <div className="inspector__section">
+        <h4>Property sets</h4>
+        {Object.keys(psets).length === 0 && <p className="muted" style={{ fontSize: 12.5 }}>Aucun Pset trouvé</p>}
+        {Object.entries(psets).map(([k, v]) => (
+          <div key={k} className="inspector__row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
+            <dt style={{ fontWeight: 600, color: 'var(--gray-700)' }}>{k}</dt>
+            <dd style={{ textAlign: 'left', color: 'var(--gray-500)' }}>{JSON.stringify(v)}</dd>
+          </div>
+        ))}
       </div>
 
-      <div className="mt-4">
-        <h4 className="text-sm font-semibold">Équipements rattachés</h4>
-        <div className="mt-2">
-          {equipment.length === 0 && <div className="text-gray-400">Aucun équipement lié</div>}
-          {equipment.length > 0 && (
-            <div className="flex flex-col gap-2">
-              {equipment.map((e) => (
-                <div key={e.id} className="flex items-center gap-3 p-2 bg-gray-800 rounded">
-                  <img src={`/icons/${e.category}.svg`} alt={e.category} style={{ width: 28, height: 28 }} />
-                  <div className="text-xs">
-                    <div className="font-medium">{e.name}</div>
-                    <div className="text-gray-400 truncate" style={{ maxWidth: 220 }}>{e.desc}</div>
-                  </div>
+      <div className="inspector__section">
+        <h4>Équipements rattachés</h4>
+        {equipment.length === 0 && <p className="muted" style={{ fontSize: 12.5 }}>Aucun équipement lié</p>}
+        {equipment.length > 0 && (
+          <div>
+            {equipment.map((e) => (
+              <div key={e.id} className="equipment-row">
+                <img src={`/icons/${e.category}.svg`} alt={e.category} style={{ width: 26, height: 26, flexShrink: 0 }} />
+                <div style={{ overflow: 'hidden' }}>
+                  <div className="equipment-row__name">{e.name}</div>
+                  <div className="equipment-row__desc">{e.desc}</div>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )
