@@ -1,0 +1,395 @@
+{
+  "common": {
+    "supported_schemas": [
+      "IFC2X3",
+      "IFC4",
+      "IFC4X3",
+      "IFC4X3_ADD2"
+    ]
+  },
+  "discipline_aliases": {
+    "ARCHITECTURE": "ARCHI",
+    "ELECTRICITE": "ELEC",
+    "SANITAIRE": "PLOMBERIE",
+    "MEP": "MEP",
+    "ARCHI": "ARCHI",
+    "ELEC": "ELEC",
+    "PLOMBERIE": "PLOMBERIE"
+  },
+  "disciplines": {
+    "ARCHI": {
+      "defines_spatial_backbone": true,
+      "required_spatial_elements": [
+        "IfcBuilding",
+        "IfcBuildingStorey"
+      ],
+      "business_critical_types": [
+        "IfcSpace",
+        "IfcWall",
+        "IfcSlab",
+        "IfcRoof",
+        "IfcDoor",
+        "IfcWindow"
+      ],
+      "required_property_sets": {
+        "IfcSpace": [
+          "Pset_SpaceCommon.IsExternal",
+          "Pset_SpaceCommon.OccupancyType"
+        ],
+        "IfcWall": [
+          "Pset_WallCommon.FireRating"
+        ]
+      }
+    },
+    "CVC": {
+      "defines_spatial_backbone": false,
+      "required_spatial_elements": [
+        "IfcBuilding",
+        "IfcBuildingStorey"
+      ],
+      "business_critical_types": [
+        "IfcDistributionFlowElement",
+        "IfcAirTerminal",
+        "IfcDuctSegment",
+        "IfcFlowMovingDevice"
+      ],
+      "required_property_sets": {
+        "IfcDistributionFlowElement": [
+          "Pset_EquipmentCommon.Manufacturer",
+          "Pset_EquipmentCommon.Reference"
+        ],
+        "IfcAirTerminal": [
+          "Pset_AirTerminalTypeCommon.AirFlowrateRange"
+        ]
+      }
+    },
+    "PLOMBERIE": {
+      "defines_spatial_backbone": false,
+      "required_spatial_elements": [
+        "IfcSite"
+      ],
+      "business_critical_types": [
+        "IfcFlowSegment",
+        "IfcFlowFitting",
+        "IfcPipeSegment",
+        "IfcSanitaryTerminal"
+      ],
+      "required_property_sets": {
+        "IfcPipeSegment": [
+          "Pset_PipeSegmentTypeCommon.NominalDiameter"
+        ],
+        "IfcSanitaryTerminal": [
+          "Pset_SanitaryTerminalTypeCommon.SanitaryTerminalType"
+        ]
+      }
+    },
+    "ELEC": {
+      "defines_spatial_backbone": false,
+      "required_spatial_elements": [
+        "IfcBuilding",
+        "IfcBuildingStorey"
+      ],
+      "business_critical_types": [
+        "IfcElectricAppliance",
+        "IfcCableCarrierSegment",
+        "IfcOutlet",
+        "IfcSwitchingDevice"
+      ],
+      "required_property_sets": {
+        "IfcElectricAppliance": [
+          "Pset_ElectricApplianceTypeCommon.Reference"
+        ],
+        "IfcOutlet": [
+          "Pset_OutletTypeCommon.NumberOfGangs"
+        ]
+      }
+    },
+    "MEP": {
+      "defines_spatial_backbone": false,
+      "required_spatial_elements": [
+        "IfcBuilding",
+        "IfcBuildingStorey"
+      ],
+      "business_critical_types": [
+        "IfcUnitaryEquipment",
+        "IfcFlowTerminal",
+        "IfcDuctSegment",
+        "IfcPipeSegment",
+        "IfcFlowMovingDevice",
+        "IfcElectricAppliance",
+        "IfcDistributionFlowElement"
+      ],
+      "required_property_sets": {
+        "IfcUnitaryEquipment": [
+          "Pset_UnitaryEquipmentTypeCommon.NominalCoolingCapacity",
+          "Pset_UnitaryEquipmentTypeCommon.NominalHeatingCapacity"
+        ],
+        "IfcPipeSegment": [
+          "Pset_PipeSegmentTypeCommon.NominalDiameter"
+        ],
+        "IfcDuctSegment": [
+          "Pset_DuctSegmentTypeCommon.NominalDiameter"
+        ],
+        "IfcElectricAppliance": [
+          "Pset_ElectricApplianceTypeCommon.Reference"
+        ]
+      }
+    },
+    "EQUIPEMENTS_AUTRE": {
+      "defines_spatial_backbone": false,
+      "required_spatial_elements": [
+        "IfcBuilding",
+        "IfcBuildingStorey"
+      ],
+      "business_critical_types": [
+        "IfcBuildingElementProxy",
+        "IfcTransportElement",
+        "IfcFurnishingElement",
+        "IfcDiscreteAccessory"
+      ],
+      "required_property_sets": {
+        "IfcBuildingElementProxy": [
+          "Pset_ManufacturerTypeInformation.ModelReference"
+        ],
+        "IfcFurnishingElement": [
+          "Pset_FurnitureTypeCommon.Reference"
+        ]
+      }
+    },
+    "FACADE": {
+      "defines_spatial_backbone": false,
+      "required_spatial_elements": [
+        "IfcBuilding",
+        "IfcBuildingStorey"
+      ],
+      "business_critical_types": [
+        "IfcCurtainWall",
+        "IfcWall",
+        "IfcPlate",
+        "IfcWindow",
+        "IfcDoor"
+      ],
+      "required_property_sets": {
+        "IfcCurtainWall": [
+          "Pset_CurtainWallCommon.FireRating"
+        ],
+        "IfcWindow": [
+          "Pset_WindowCommon.FireRating"
+        ]
+      }
+    },
+    "SECOND_OEUVRE": {
+      "defines_spatial_backbone": false,
+      "required_spatial_elements": [
+        "IfcBuilding",
+        "IfcBuildingStorey"
+      ],
+      "business_critical_types": [
+        "IfcCovering",
+        "IfcRailing",
+        "IfcStair",
+        "IfcDoor",
+        "IfcWindow"
+      ],
+      "required_property_sets": {
+        "IfcCovering": [
+          "Pset_CoveringCommon.IsExternal"
+        ],
+        "IfcDoor": [
+          "Pset_DoorCommon.FireRating"
+        ]
+      }
+    },
+    "AMENAGEMENT_EXTERIEUR": {
+      "defines_spatial_backbone": false,
+      "required_spatial_elements": [
+        "IfcSite"
+      ],
+      "business_critical_types": [
+        "IfcSite",
+        "IfcBuiltElement",
+        "IfcCivilElement",
+        "IfcGeographicElement"
+      ],
+      "required_property_sets": {
+        "IfcSite": [
+          "Pset_SiteCommon.BuildingHeightLimit"
+        ],
+        "IfcBuiltElement": [
+          "Pset_ManufacturerTypeInformation.ModelReference"
+        ]
+      }
+    },
+    "SCENOGRAPHIE": {
+      "defines_spatial_backbone": false,
+      "required_spatial_elements": [
+        "IfcBuilding",
+        "IfcBuildingStorey"
+      ],
+      "business_critical_types": [
+        "IfcFurnishingElement",
+        "IfcLightFixture",
+        "IfcAudioVisualAppliance",
+        "IfcFlowTerminal"
+      ],
+      "required_property_sets": {
+        "IfcLightFixture": [
+          "Pset_LightFixtureTypeCommon.LampPower"
+        ],
+        "IfcAudioVisualAppliance": [
+          "Pset_ElectricApplianceTypeCommon.Reference"
+        ]
+      }
+    },
+    "CUISINE": {
+      "defines_spatial_backbone": false,
+      "required_spatial_elements": [
+        "IfcBuilding",
+        "IfcBuildingStorey"
+      ],
+      "business_critical_types": [
+        "IfcElectricAppliance",
+        "IfcSanitaryTerminal",
+        "IfcFlowTerminal",
+        "IfcFurnishingElement"
+      ],
+      "required_property_sets": {
+        "IfcElectricAppliance": [
+          "Pset_ElectricApplianceTypeCommon.Reference"
+        ],
+        "IfcSanitaryTerminal": [
+          "Pset_SanitaryTerminalTypeCommon.SanitaryTerminalType"
+        ]
+      }
+    },
+    "MACHINES": {
+      "defines_spatial_backbone": false,
+      "required_spatial_elements": [
+        "IfcBuilding",
+        "IfcBuildingStorey"
+      ],
+      "business_critical_types": [
+        "IfcFlowMovingDevice",
+        "IfcUnitaryEquipment",
+        "IfcElectricAppliance",
+        "IfcMotorConnection"
+      ],
+      "required_property_sets": {
+        "IfcFlowMovingDevice": [
+          "Pset_EquipmentCommon.Reference"
+        ],
+        "IfcUnitaryEquipment": [
+          "Pset_UnitaryEquipmentTypeCommon.NominalCoolingCapacity"
+        ]
+      }
+    },
+    "STRUCTURE": {
+      "defines_spatial_backbone": false,
+      "required_spatial_elements": [
+        "IfcBuilding",
+        "IfcBuildingStorey"
+      ],
+      "business_critical_types": [
+        "IfcBeam",
+        "IfcColumn",
+        "IfcMember",
+        "IfcFooting",
+        "IfcPile",
+        "IfcSlab"
+      ],
+      "required_property_sets": {
+        "IfcBeam": [
+          "Pset_BeamCommon.LoadBearing"
+        ],
+        "IfcColumn": [
+          "Pset_ColumnCommon.LoadBearing"
+        ]
+      }
+    },
+    "PERCEMENTS": {
+      "defines_spatial_backbone": false,
+      "required_spatial_elements": [
+        "IfcBuilding",
+        "IfcBuildingStorey"
+      ],
+      "business_critical_types": [
+        "IfcOpeningElement",
+        "IfcVoidingFeature",
+        "IfcRelVoidsElement"
+      ],
+      "required_property_sets": {
+        "IfcOpeningElement": [
+          "Pset_OpeningElementCommon.FireRating"
+        ],
+        "IfcVoidingFeature": [
+          "Pset_FeatureElementAdditionCommon.Reference"
+        ]
+      }
+    },
+    "ARCHITECTURE": {
+      "defines_spatial_backbone": true,
+      "required_spatial_elements": [
+        "IfcBuilding",
+        "IfcBuildingStorey"
+      ],
+      "business_critical_types": [
+        "IfcSpace",
+        "IfcWall",
+        "IfcSlab",
+        "IfcRoof",
+        "IfcDoor",
+        "IfcWindow"
+      ],
+      "required_property_sets": {
+        "IfcSpace": [
+          "Pset_SpaceCommon.IsExternal",
+          "Pset_SpaceCommon.OccupancyType"
+        ],
+        "IfcWall": [
+          "Pset_WallCommon.FireRating"
+        ]
+      }
+    },
+    "SANITAIRE": {
+      "defines_spatial_backbone": false,
+      "required_spatial_elements": [
+        "IfcSite"
+      ],
+      "business_critical_types": [
+        "IfcFlowSegment",
+        "IfcFlowFitting",
+        "IfcPipeSegment",
+        "IfcSanitaryTerminal"
+      ],
+      "required_property_sets": {
+        "IfcPipeSegment": [
+          "Pset_PipeSegmentTypeCommon.NominalDiameter"
+        ],
+        "IfcSanitaryTerminal": [
+          "Pset_SanitaryTerminalTypeCommon.SanitaryTerminalType"
+        ]
+      }
+    },
+    "ELECTRICITE": {
+      "defines_spatial_backbone": false,
+      "required_spatial_elements": [
+        "IfcBuilding",
+        "IfcBuildingStorey"
+      ],
+      "business_critical_types": [
+        "IfcElectricAppliance",
+        "IfcCableCarrierSegment",
+        "IfcOutlet",
+        "IfcSwitchingDevice"
+      ],
+      "required_property_sets": {
+        "IfcElectricAppliance": [
+          "Pset_ElectricApplianceTypeCommon.Reference"
+        ],
+        "IfcOutlet": [
+          "Pset_OutletTypeCommon.NumberOfGangs"
+        ]
+      }
+    }
+  }
+}

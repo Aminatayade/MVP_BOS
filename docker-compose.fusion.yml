@@ -1,18 +1,15 @@
 # FILE: docker-compose.fusion.yml
-# DESCRIPTION: Orchestrateur du produit fusionné bos-light-mvp + MVP-bim-integration.
+# DESCRIPTION: Orchestrateur du produit fusionné BOS Light + moteur BIM.
 #              Ne remplace PAS docker-compose.yml (qui reste utilisable pour du
 #              dev isolé de BOS Light seul) : c'est le fichier à utiliser pour
 #              lancer l'application complète, gateway BOS Light en unique point
 #              d'entrée public côté backend.
 #
-# PRÉREQUIS DE STRUCTURE :
-#   Ce fichier attend que le dossier MVP-bim-integration soit un DOSSIER FRÈRE
-#   de bos-light-mvp (même dossier parent), ex :
-#     mon_dossier_de_travail/
-#     ├─ bos-light-mvp/          <- ce repo
-#     └─ MVP-bim-integration/
-#   Si ce n'est pas le cas, ajuste les chemins "../MVP-bim-integration/..."
-#   ci-dessous.
+#              Le backend BIM (validation IFC, ingestion graphe) vit désormais
+#              dans ./bim_validator, DANS ce repo (rapatrié depuis le projet
+#              d'origine MVP-bim-integration, qui n'était pas versionné) :
+#              un simple `git clone` + `docker compose up` suffit, plus besoin
+#              d'un dossier externe ni d'un transfert de fichiers à part.
 #
 # SÉCURITÉ :
 #   - bim_api / timeseries_api (MVP BIM) n'ont AUCUN port publié sur l'hôte :
@@ -190,7 +187,7 @@ services:
   # MVP BIM — API de validation/ingestion IFC (interne uniquement, via gateway)
   # ---------------------------------------------------------------------------
   bim_api:
-    build: ../MVP-bim-integration/Backend/bim_validator
+    build: ./bim_validator
     container_name: bos_bim_api
     restart: always
     depends_on:
@@ -216,7 +213,7 @@ services:
   # MVP BIM — API TimeSeries (interne uniquement, via gateway)
   # ---------------------------------------------------------------------------
   timeseries_api:
-    build: ../MVP-bim-integration/Backend/bim_validator
+    build: ./bim_validator
     container_name: bos_timeseries_api
     restart: always
     depends_on:
@@ -240,7 +237,7 @@ services:
   # Usage ponctuel : docker compose -f docker-compose.fusion.yml run --rm bim_validator archi:maquettes/xxx.ifc
   # ---------------------------------------------------------------------------
   bim_validator:
-    build: ../MVP-bim-integration/Backend/bim_validator
+    build: ./bim_validator
     container_name: bos_bim_validator
     profiles: ["tools"]
     environment:
@@ -253,7 +250,7 @@ services:
       - NATS_USER=${NATS_USER:-bos_admin}
       - NATS_PASSWORD=${NATS_PASSWORD:?Définir NATS_PASSWORD dans .env}
     volumes:
-      - ../MVP-bim-integration/Backend/bim_validator/maquettes:/app/maquettes
+      - ./bim_validator/maquettes:/app/maquettes
     networks:
       - fusion_network
 

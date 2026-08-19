@@ -1,0 +1,5 @@
+ifcopenshell
+requests
+nats-py
+fastapi
+uvicorn[standard]
