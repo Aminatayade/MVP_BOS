@@ -216,8 +216,15 @@ export default function BimExplorer() {
             ← Retour à l'upload
           </button>
         </header>
-        <div style={{ flex: 1, display: 'flex', gap: 12, padding: 12, minHeight: 0 }}>
-          <div style={{ flex: 1 }}>
+        <div style={{ flex: 1, display: 'flex', gap: 12, padding: 12, minHeight: 0, minWidth: 0 }}>
+          {/* minWidth/minHeight: 0 indispensables ici : un flex-item vaut par
+              défaut min-width/min-height "auto", donc refuse de rétrécir en
+              dessous de la taille intrinsèque de son contenu. Le canvas
+              Cytoscape à l'intérieur (width/height: 100%) se mesure alors sur
+              son propre contenu au lieu de la place disponible, et grossit à
+              chaque re-rendu (boucle de redimensionnement) en écrasant le
+              panneau de droite. */}
+          <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
             <BimGraphViewer
               elements={visualElements}
               onNodeSelect={(data) => setSelectedNodeInfo(data)}
@@ -225,7 +232,7 @@ export default function BimExplorer() {
               height="100%"
             />
           </div>
-          <div style={{ width: 380, background: '#1f2937', borderRadius: 8, overflow: 'auto' }}>
+          <div style={{ width: 380, flexShrink: 0, background: '#1f2937', borderRadius: 8, overflow: 'auto' }}>
             <NodeInspector node={selectedNodeInfo} onClose={() => setSelectedNodeInfo(null)} />
           </div>
         </div>
