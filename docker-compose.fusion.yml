@@ -75,7 +75,13 @@ services:
     image: quay.io/keycloak/keycloak:24.0.0
     container_name: bos_keycloak
     restart: always
-    command: start-dev
+    # --import-realm : importe automatiquement au démarrage tout realm JSON
+    # trouvé dans /opt/keycloak/data/import/ -- SANS EFFET si le realm existe
+    # déjà en base (donc sans risque sur une instance qui tourne déjà). C'est
+    # ce qui permet à une machine neuve (ex: celle du collègue) de récupérer
+    # automatiquement bos-realm (rôles + utilisateurs de test) au premier
+    # démarrage, sans reconfiguration manuelle de Keycloak.
+    command: start-dev --import-realm
     environment:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-bos_db}
@@ -83,6 +89,8 @@ services:
       KC_DB_PASSWORD: ${POSTGRES_PASSWORD:?Définir POSTGRES_PASSWORD dans .env}
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Définir KEYCLOAK_ADMIN_PASSWORD dans .env}
+    volumes:
+      - ./keycloak/bos-realm-export.json:/opt/keycloak/data/import/bos-realm-export.json:ro
     ports:
       - "8080:8080"
     depends_on:
@@ -134,6 +142,7 @@ services:
   arcadedb:
     image: arcadedata/arcadedb:latest
     container_name: bos_arcadedb
+    restart: always
     environment:
       - JAVA_OPTS=-Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:?Définir ARCADEDB_PASSWORD dans .env} -Darcadedb.server.plugins=OpenCypher
     ports:
@@ -150,6 +159,7 @@ services:
   nats:
     image: nats:latest
     container_name: bos_nats
+    restart: always
     command: "-js -m 8222 --user ${NATS_USER:-bos_admin} --pass ${NATS_PASSWORD:?Définir NATS_PASSWORD dans .env}"
     ports:
       - "4222:4222"
@@ -164,6 +174,7 @@ services:
   seaweedfs:
     image: chrislusf/seaweedfs:latest
     container_name: bos_seaweedfs
+    restart: always
     command: 'server -dir=/data -volume.max=5'
     ports:
       # Master (API/UI) admin/debug uniquement, lié à 127.0.0.1. Le port Volume
