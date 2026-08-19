@@ -72,7 +72,6 @@ export default function BimGraphViewer({
     if (!containerRef.current) return
 
     let cancelled = false
-    let resizeObserver: ResizeObserver | null = null
 
     const initCy = () => {
       if (cancelled || !containerRef.current) return
@@ -238,22 +237,27 @@ export default function BimGraphViewer({
       })
 
       cyRef.current = cy
-
-      // Cytoscape ne se redimensionne jamais tout seul si son conteneur
-      // change de taille après cette création (ex: police Google Fonts qui
-      // finit de charger après le premier rendu et décale légèrement l'en-
-      // tête) : sans ça, canvas et zone cliquable finissent désynchronisés.
-      resizeObserver = new ResizeObserver(() => {
-        cyRef.current?.resize()
-      })
-      resizeObserver.observe(containerRef.current)
     }
 
     initCy()
 
+    // Cytoscape mesure et met en cache la position/taille de son conteneur au
+    // moment de la création, pour convertir les clics souris en coordonnées
+    // du graphe. Si un parent flexbox redimensionne ensuite ce conteneur
+    // (ex: apparition du panneau NodeInspector, polices qui finissent de
+    // charger, redimensionnement de la fenêtre) SANS que la fenêtre elle-même
+    // ne se redimensionne, ce cache devient obsolète : les clics visuellement
+    // sur un nœud sont alors reçus décalés, jusqu'à un resize explicite.
+    // ResizeObserver détecte tout changement de taille du conteneur lui-même
+    // (pas seulement de la fenêtre) et force Cytoscape à se resynchroniser.
+    const resizeObserver = new ResizeObserver(() => {
+      cyRef.current?.resize()
+    })
+    resizeObserver.observe(containerRef.current)
+
     return () => {
       cancelled = true
-      resizeObserver?.disconnect()
+      resizeObserver.disconnect()
       expandedRef.current.clear()
       if (cyRef.current) {
         try {
