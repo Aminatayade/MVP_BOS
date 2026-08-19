@@ -142,6 +142,10 @@ services:
     restart: always
     environment:
       - JAVA_OPTS=-Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:?Définir ARCADEDB_PASSWORD dans .env} -Darcadedb.server.plugins=OpenCypher
+    volumes:
+      # Sans ceci, chaque recréation du conteneur (rebuild, redémarrage machine)
+      # repartait d'une base vide : les maquettes déjà ingérées disparaissaient.
+      - arcadedb_data:/home/arcadedb/databases
     ports:
       # Admin/debug uniquement : lié à 127.0.0.1, pas au reste du réseau.
       - "127.0.0.1:8582:8582"
@@ -261,3 +265,4 @@ networks:
 volumes:
   postgres_data:
   postgres_app_data:
+  arcadedb_data:

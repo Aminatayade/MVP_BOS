@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -28,6 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from adapters.arcadedb_ts_adapter import ArcadeDbTimeseriesAdapter
 from consume_timeseries import run_consumer
+from infrastructure.adapters.arcadedb_repository_adapter import ArcadeDbRepositoryAdapter
 
 
 def _build_repository() -> ArcadeDbTimeseriesAdapter:
@@ -39,8 +41,31 @@ def _build_repository() -> ArcadeDbTimeseriesAdapter:
     )
 
 
+def _ensure_arcadedb_ready(attempts: int = 10, delay_seconds: float = 3.0) -> None:
+    """Cree la base ArcadeDB 'bim' si besoin, avec re-essais (meme logique
+    que api_server.py -- voir sa docstring pour le pourquoi)."""
+    repo = ArcadeDbRepositoryAdapter(
+        base_url=os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480"),
+        database=os.environ.get("ARCADEDB_DATABASE", "bim"),
+        username=os.environ.get("ARCADEDB_USERNAME", "root"),
+        password=os.environ.get("ARCADEDB_PASSWORD", "testBIM123"),
+    )
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            repo.ensure_database()
+            print("ArcadeDB: base 'bim' prete.")
+            return
+        except Exception as exc:
+            last_error = exc
+            print(f"ArcadeDB pas encore pret (essai {attempt}/{attempts}) : {exc}", file=sys.stderr)
+            time.sleep(delay_seconds)
+    print(f"ArcadeDB toujours indisponible apres {attempts} essais, demarrage quand meme : {last_error}", file=sys.stderr)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _ensure_arcadedb_ready()
     thread = threading.Thread(target=run_consumer, name="nats-timeseries-consumer", daemon=True)
     thread.start()
     yield

@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -449,7 +450,32 @@ def serialize_graph_result(result: BimGraphIngestionResult) -> dict:
     }
 
 
+def _ensure_arcadedb_ready(attempts: int = 10, delay_seconds: float = 3.0) -> None:
+    """Cree la base ArcadeDB 'bim' si besoin, avec re-essais : au demarrage
+    de la stack Docker, ce conteneur peut demarrer avant qu'ArcadeDB soit
+    pret a accepter des commandes (pas de healthcheck bloquant dans le
+    docker-compose)."""
+    repo = ArcadeDbRepositoryAdapter(
+        base_url=os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480"),
+        database=os.environ.get("ARCADEDB_DATABASE", "bim"),
+        username=os.environ.get("ARCADEDB_USERNAME", "root"),
+        password=os.environ.get("ARCADEDB_PASSWORD", "testBIM123"),
+    )
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            repo.ensure_database()
+            print("ArcadeDB: base 'bim' prete.")
+            return
+        except Exception as exc:
+            last_error = exc
+            print(f"ArcadeDB pas encore pret (essai {attempt}/{attempts}) : {exc}", file=sys.stderr)
+            time.sleep(delay_seconds)
+    print(f"ArcadeDB toujours indisponible apres {attempts} essais, demarrage quand meme : {last_error}", file=sys.stderr)
+
+
 def run_server(host="0.0.0.0", port=8000):
+    _ensure_arcadedb_ready()
     server = ThreadingHTTPServer((host, port), ApiHandler)
     print(f"API server listening on http://{host}:{port}")
     server.serve_forever()
