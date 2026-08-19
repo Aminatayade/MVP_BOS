@@ -47,6 +47,22 @@ export function edgeElement(source: string, target: string): CytoscapeElement {
   return { data: { id: `${source}-${target}`, source, target, label: '', type: 'edge' } }
 }
 
+// Un Room peut porter des dizaines d'équipements (jusqu'à 28 dans nos jeux de
+// test) : les ajouter un par un noyait le graphe. On les représente par UN
+// seul nœud groupé, déplié à la demande via /graph/room-equipment.
+export function equipmentGroupPlaceholder(parentId: string, count: number): CytoscapeElement {
+  return {
+    data: {
+      id: `${parentId}-equipment-group`,
+      label: `${count} équipement${count > 1 ? 's' : ''}`,
+      type: 'EquipmentGroup',
+      placeholder: true,
+      context: 'room-equipment',
+      parentId,
+    },
+  }
+}
+
 export function buildElementsFromFloorView(rows: unknown[]): CytoscapeElement[] {
   const nodesMap = new Map<string, CytoscapeElement>()
   const edges: CytoscapeElement[] = []

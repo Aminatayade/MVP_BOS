@@ -33,6 +33,15 @@ export async function getNodeChildren(nodeId: string) {
   }
 }
 
+export async function getRoomEquipment(nodeId: string) {
+  try {
+    const resp = await apiClient.get('/api/bim/graph/room-equipment', { params: { global_id: nodeId } })
+    return unwrapArcadeResult(resp.data)
+  } catch (error) {
+    throw new Error(extractErrorMessage(error, 'Failed to fetch room equipment'))
+  }
+}
+
 export async function getRootContexts() {
   try {
     const resp = await apiClient.get('/api/bim/graph/floors')

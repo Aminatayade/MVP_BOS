@@ -128,6 +128,11 @@ async def graph_neighbors(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/neighbors", request, SHORT_TIMEOUT)
 
 
+@router.get("/graph/room-equipment")
+async def graph_room_equipment(request: Request):
+    return await _forward_get(BIM_API_INTERNAL_URL, "/graph/room-equipment", request, SHORT_TIMEOUT)
+
+
 @router.get("/graph/view")
 async def graph_view(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/view", request, SHORT_TIMEOUT)

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { getNodeChildren } from '../services/arcadeApi'
+import { getRoomEquipment } from '../services/arcadeApi'
+import { parseArcadeNode } from '../utils/graphUtils'
 
 type Props = {
   node: any | null
@@ -23,19 +24,17 @@ export default function NodeInspector({ node, onClose, onExpand, onCollapse }: P
     let cancelled = false
     async function loadEquipment() {
       try {
-        const rows = await getNodeChildren(node.id)
+        const rows = await getRoomEquipment(node.id)
         const eq: any[] = []
         for (const row of rows) {
-          const m = row['neighbors'] || row['m'] || row['result'] || []
-          for (const nb of m) {
-            const d = nb.attributes || nb
-            if (!d || !d.global_id) continue
-            const t = nb['@type'] || d.type || ''
-            // treat any node with category or type including 'Equipment' as equipment
-            if (t.toLowerCase().includes('equipment') || d.category || d.ifc_type === 'IfcDistributionElement') {
-              eq.push({ id: d.global_id, name: d.name || d.label || d.global_id, category: (d.category || 'generic').toLowerCase(), desc: d.description || d.ifc_type || JSON.stringify(d.psets || d.properties || {}) })
-            }
-          }
+          const parsed = parseArcadeNode((row as Record<string, unknown>).node ?? row)
+          if (!parsed) continue
+          eq.push({
+            id: parsed.id,
+            name: parsed.name || parsed.label || parsed.id,
+            category: (parsed.category || 'generic').toLowerCase(),
+            desc: parsed.ifc_type || JSON.stringify(parsed.properties || {}),
+          })
         }
         if (!cancelled) setEquipment(eq)
       } catch (e) {
@@ -110,7 +109,7 @@ export default function NodeInspector({ node, onClose, onExpand, onCollapse }: P
       </div>
 
       <div className="inspector__section">
-        <h4>Équipements rattachés</h4>
+        <h4>Équipements rattachés{equipment.length > 0 ? ` (${equipment.length})` : ''}</h4>
         {equipment.length === 0 && <p className="muted" style={{ fontSize: 12.5 }}>Aucun équipement lié</p>}
         {equipment.length > 0 && (
           <div>

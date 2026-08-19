@@ -10,7 +10,7 @@ et retourne une liste de ValidationIssue. Aucune dépendance à ifcopenshell.
 from .entities import BimElement, SpatialStructureSummary, ModelUnits, ValidationIssue, Severity
 
 GUID_EXPECTED_LENGTH = 22
-ACCEPTED_LENGTH_UNITS = {"METRE", "MILLIMETRE", "CENTIMETRE"}
+ACCEPTED_LENGTH_UNITS = {"METRE", "MILLIMETRE", "CENTIMETRE", "FOOT"}
 
 
 def check_valid_guid_format(elements: list[BimElement]) -> list[ValidationIssue]:

@@ -152,9 +152,46 @@ RETURN f AS floor, collect(distinct r) AS rooms, collect(distinct e) AS equipmen
                 password=arcadedb_password,
             )
 
+            # Les relations LOCATED_IN vers un Equipment sont exclues des "voisins
+            # structurels" : une pièce peut porter des dizaines d'équipements, ce
+            # qui noyait le graphe Cytoscape en un clic. Le compte est renvoyé à
+            # part ; le frontend affiche un nœud groupé "N équipements" et ne va
+            # chercher la liste réelle (/graph/room-equipment) qu'à la demande.
             cypher = f"""
-MATCH (n {{global_id: '{gid}'}})-[r]-(m)
-RETURN n AS node, collect(distinct m) AS neighbors
+MATCH (n {{global_id: '{gid}'}})
+OPTIONAL MATCH (n)-[r]-(m)
+  WHERE NOT (type(r) = 'LOCATED_IN' AND 'Equipment' IN labels(m))
+WITH n, collect(distinct m) AS structural_neighbors
+OPTIONAL MATCH (eq:Equipment)-[:LOCATED_IN]->(n)
+RETURN n AS node, structural_neighbors AS neighbors, count(distinct eq) AS equipment_count
+"""
+            try:
+                resp = repo.query_cypher(cypher)
+                self._send_json({"ok": True, "result": resp})
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, 500)
+            return
+        if parsed.path == "/graph/room-equipment":
+            params = parse_qs(parsed.query)
+            gid = params.get("global_id", [None])[0]
+            if not gid:
+                self._send_json({"error": "global_id query param is required"}, 400)
+                return
+
+            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
+            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
+            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
+            arcadedb_password = os.environ.get("ARCADEDB_PASSWORD", "testBIM123")
+            repo = ArcadeDbRepositoryAdapter(
+                base_url=arcadedb_base_url,
+                database=arcadedb_database,
+                username=arcadedb_username,
+                password=arcadedb_password,
+            )
+
+            cypher = f"""
+MATCH (e:Equipment)-[:LOCATED_IN]->(r {{global_id: '{gid}'}})
+RETURN e AS node
 """
             try:
                 resp = repo.query_cypher(cypher)

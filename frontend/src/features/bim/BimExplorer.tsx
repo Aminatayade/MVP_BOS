@@ -432,7 +432,10 @@ export default function BimExplorer() {
               const isIngestion = !isError && 'validation_storage' in item.result
               const validationResult = !isError && !isIngestion ? (item.result as ValidationResult) : null
               const ingestionResult = isIngestion ? (item.result as IngestionResult) : null
-              const ok = isIngestion || (validationResult?.success ?? false)
+              const ingestionOk =
+                isIngestion &&
+                ('success' in ingestionResult!.validation_storage ? ingestionResult!.validation_storage.success : false)
+              const ok = isIngestion ? ingestionOk : (validationResult?.success ?? false)
 
               return (
                 <div key={item.filename} className={`result-card ${isError ? 'result-card--error' : ok ? 'result-card--ok' : 'result-card--error'}`}>
@@ -441,7 +444,9 @@ export default function BimExplorer() {
                     {isError ? (
                       <span className="badge-outline badge-outline--error">Erreur</span>
                     ) : isIngestion ? (
-                      <span className="badge-outline badge-outline--ok">Terminée</span>
+                      <span className={`badge-outline ${ingestionOk ? 'badge-outline--ok' : 'badge-outline--error'}`}>
+                        {ingestionOk ? 'Terminée' : 'Rejetée'}
+                      </span>
                     ) : (
                       <span className={`badge-outline ${validationResult!.success ? 'badge-outline--ok' : 'badge-outline--error'}`}>
                         {validationResult!.success ? 'Conforme' : 'Rejetée'}
@@ -471,6 +476,29 @@ export default function BimExplorer() {
                             {ingestionResult!.graph_ingestion.unmatched_equipment_count} /{' '}
                             {ingestionResult!.graph_ingestion.equipment_count} équipement(s) non rattaché(s).
                           </p>
+                        )}
+
+                      {'errors' in ingestionResult!.validation_storage &&
+                        ingestionResult!.validation_storage.errors.length > 0 && (
+                          <div style={{ marginTop: 6 }}>
+                            <strong style={{ fontSize: 12 }}>
+                              Erreurs ({ingestionResult!.validation_storage.errors.length})
+                            </strong>
+                            <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12, color: 'var(--danger)' }}>
+                              {ingestionResult!.validation_storage.errors.map((msg) => <li key={msg}>{msg}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                      {'warnings' in ingestionResult!.validation_storage &&
+                        ingestionResult!.validation_storage.warnings.length > 0 && (
+                          <div style={{ marginTop: 6 }}>
+                            <strong style={{ fontSize: 12 }}>
+                              Avertissements ({ingestionResult!.validation_storage.warnings.length})
+                            </strong>
+                            <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12, color: 'var(--warning)' }}>
+                              {ingestionResult!.validation_storage.warnings.map((msg) => <li key={msg}>{msg}</li>)}
+                            </ul>
+                          </div>
                         )}
                     </>
                   )}

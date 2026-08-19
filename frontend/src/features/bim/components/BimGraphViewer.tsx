@@ -1,9 +1,9 @@
 import { useEffect, useRef } from 'react'
 import cytoscape, { type Core, type ElementDefinition } from 'cytoscape'
 import dagre from 'cytoscape-dagre'
-import { getNodeChildren } from '../services/arcadeApi'
+import { getNodeChildren, getRoomEquipment } from '../services/arcadeApi'
 import type { CytoscapeElement } from '../utils/graphUtils'
-import { edgeElement, nodeElement, parseArcadeNode } from '../utils/graphUtils'
+import { edgeElement, equipmentGroupPlaceholder, nodeElement, parseArcadeNode } from '../utils/graphUtils'
 
 cytoscape.use(dagre)
 
@@ -186,6 +186,33 @@ export default function BimGraphViewer({
         onNodeSelectRef.current?.(data)
 
         if (data.placeholder === true) {
+          // Nœud groupé "N équipements" : on ne va chercher la vraie liste
+          // qu'ici, au clic, pour ne jamais charger d'un coup les dizaines
+          // d'équipements d'une pièce en même temps que sa hiérarchie spatiale.
+          if (data.context === 'room-equipment' && typeof data.parentId === 'string') {
+            const parentId = data.parentId
+            if (!expandedRef.current.has(node.id())) {
+              try {
+                const rows = await getRoomEquipment(parentId)
+                for (const raw of rows) {
+                  const parsed = parseArcadeNode((raw as Record<string, unknown>).node ?? raw)
+                  if (!parsed || parsed.id === parentId) continue
+
+                  if (cy.$id(parsed.id).empty()) cy.add(nodeElement(parsed))
+
+                  const edgeId = `${parentId}-${parsed.id}`
+                  if (cy.$id(edgeId).empty()) cy.add(edgeElement(parentId, parsed.id))
+                }
+                expandedRef.current.add(node.id())
+                node.remove()
+                runLayout(cy)
+              } catch (error) {
+                console.error(`Échec du dépliage des équipements de ${parentId}:`, error)
+              }
+            }
+            return
+          }
+
           onPlaceholderClickRef.current?.(data)
           return
         }
@@ -198,25 +225,31 @@ export default function BimGraphViewer({
         try {
           const rows = await getNodeChildren(nodeId)
           for (const row of rows) {
-            const neighbors =
-              (row as Record<string, unknown>).neighbors ??
-              (row as Record<string, unknown>).m ??
-              (row as Record<string, unknown>).result ??
-              []
+            const record = row as Record<string, unknown>
+            const neighbors = record.neighbors ?? record.m ?? record.result ?? []
+            const equipmentCount = Number(record.equipment_count ?? 0)
 
-            if (!Array.isArray(neighbors)) continue
+            if (Array.isArray(neighbors)) {
+              for (const neighbor of neighbors) {
+                const parsed = parseArcadeNode(neighbor)
+                if (!parsed || parsed.id === nodeId) continue
 
-            for (const neighbor of neighbors) {
-              const parsed = parseArcadeNode(neighbor)
-              if (!parsed || parsed.id === nodeId) continue
+                if (cy.$id(parsed.id).empty()) {
+                  cy.add(nodeElement(parsed))
+                }
 
-              if (cy.$id(parsed.id).empty()) {
-                cy.add(nodeElement(parsed))
+                const edgeId = `${nodeId}-${parsed.id}`
+                if (cy.$id(edgeId).empty()) {
+                  cy.add(edgeElement(nodeId, parsed.id))
+                }
               }
+            }
 
-              const edgeId = `${nodeId}-${parsed.id}`
-              if (cy.$id(edgeId).empty()) {
-                cy.add(edgeElement(nodeId, parsed.id))
+            if (equipmentCount > 0) {
+              const placeholder = equipmentGroupPlaceholder(nodeId, equipmentCount)
+              if (cy.$id(placeholder.data.id).empty()) {
+                cy.add(placeholder)
+                cy.add(edgeElement(nodeId, placeholder.data.id))
               }
             }
           }
