@@ -72,6 +72,7 @@ export default function BimGraphViewer({
     if (!containerRef.current) return
 
     let cancelled = false
+    let resizeObserver: ResizeObserver | null = null
 
     const initCy = () => {
       if (cancelled || !containerRef.current) return
@@ -237,12 +238,26 @@ export default function BimGraphViewer({
       })
 
       cyRef.current = cy
+
+      // Cytoscape ne se redimensionne JAMAIS tout seul : si le conteneur
+      // change de taille après cette création (ex: police Google Fonts qui
+      // finit de charger après le premier rendu et décale légèrement l'en-
+      // tête), le repère de coordonnées interne de Cytoscape reste basé sur
+      // l'ancienne taille. Les clics semblent alors rater systématiquement
+      // les nœuds : visuellement au bon endroit, mais Cytoscape les reçoit
+      // comme un clic dans le vide (event.target === cy). cy.resize()
+      // recalcule ce repère à chaque changement de taille réel.
+      resizeObserver = new ResizeObserver(() => {
+        cyRef.current?.resize()
+      })
+      resizeObserver.observe(containerRef.current)
     }
 
     initCy()
 
     return () => {
       cancelled = true
+      resizeObserver?.disconnect()
       expandedRef.current.clear()
       if (cyRef.current) {
         try {
