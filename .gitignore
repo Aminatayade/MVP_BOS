@@ -34,3 +34,8 @@ dist-ssr/
 Thumbs.db
 .vscode/
 .idea/
+
+# ==========================================
+# 5. Sauvegardes locales (scripts/backup-volumes.ps1)
+# ==========================================
+backups/

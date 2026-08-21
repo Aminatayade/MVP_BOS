@@ -10,8 +10,9 @@
 
 import { useRef, useState } from 'react'
 import BimGraphViewer from './components/BimGraphViewer'
+import BimModelViewer from './components/BimModelViewer'
 import NodeInspector from './components/NodeInspector'
-import { getBuildings, ingestBatch } from './services/arcadeApi'
+import { getBuildings, getModelSources, ingestBatch, type ModelSource } from './services/arcadeApi'
 import { arcadeRowsToNodeList, nodeElement, type CytoscapeElement } from './utils/graphUtils'
 
 type ValidationResult = {
@@ -141,6 +142,9 @@ export default function BimExplorer() {
   const [batchResults, setBatchResults] = useState<BatchResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [showVisualizer, setShowVisualizer] = useState(false)
+  const [explorerTab, setExplorerTab] = useState<'graph' | 'model'>('graph')
+  const [modelSources, setModelSources] = useState<ModelSource[]>([])
+  const [modelSourcesLoaded, setModelSourcesLoaded] = useState(false)
   const [visualElements, setVisualElements] = useState<CytoscapeElement[]>([])
   const [selectedNodeInfo, setSelectedNodeInfo] = useState<any | null>(null)
   const [dragActive, setDragActive] = useState(false)
@@ -243,6 +247,9 @@ export default function BimExplorer() {
   const openVisualizer = async () => {
     setStatus('Chargement des bâtiments...')
     setSelectedNodeInfo(null)
+    setExplorerTab('graph')
+    setModelSourcesLoaded(false)
+    setModelSources([])
     try {
       const rows = await getBuildings()
       const nodes = arcadeRowsToNodeList(rows).map((data) => nodeElement(data))
@@ -255,6 +262,19 @@ export default function BimExplorer() {
       )
     } catch (err) {
       setStatus(err instanceof Error ? err.message : 'Erreur')
+    }
+  }
+
+  const openModelTab = async () => {
+    setExplorerTab('model')
+    if (modelSourcesLoaded) return
+    try {
+      const found = await getModelSources(zone.trim())
+      setModelSources(found)
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : 'Erreur')
+    } finally {
+      setModelSourcesLoaded(true)
     }
   }
 
@@ -287,38 +307,66 @@ export default function BimExplorer() {
       <div className="explorer-overlay">
         <header className="explorer-overlay__header">
           <div>
-            <h2 style={{ color: 'var(--white)', fontSize: 17 }}>Explorateur de graphe</h2>
+            <h2 style={{ color: 'var(--white)', fontSize: 17 }}>Explorateur BIM</h2>
             <p style={{ margin: '4px 0 0', fontSize: 13 }}>{status}</p>
           </div>
-          <button
-            type="button"
-            className="btn btn-outline btn-sm"
-            style={{ background: 'transparent', color: 'var(--white)', borderColor: '#2c4c6c' }}
-            onClick={() => { setShowVisualizer(false); setVisualElements([]); setSelectedNodeInfo(null) }}
-          >
-            ← Retour à l'upload
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            {/* Onglets partageant la même zone sélectionnée : préparation du
+                point 7 de la roadmap, qui devra relier graphe et maquette 3D. */}
+            <div style={{ display: 'flex', gap: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 8, padding: 3 }}>
+              <button
+                type="button"
+                className={explorerTab === 'graph' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm'}
+                style={explorerTab !== 'graph' ? { color: '#cbd8e8' } : undefined}
+                onClick={() => setExplorerTab('graph')}
+              >
+                Graphe
+              </button>
+              <button
+                type="button"
+                className={explorerTab === 'model' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm'}
+                style={explorerTab !== 'model' ? { color: '#cbd8e8' } : undefined}
+                onClick={openModelTab}
+              >
+                Maquette 3D
+              </button>
+            </div>
+            <button
+              type="button"
+              className="btn btn-outline btn-sm"
+              style={{ background: 'transparent', color: 'var(--white)', borderColor: '#2c4c6c' }}
+              onClick={() => { setShowVisualizer(false); setVisualElements([]); setSelectedNodeInfo(null) }}
+            >
+              ← Retour à l'upload
+            </button>
+          </div>
         </header>
-        <div style={{ flex: 1, display: 'flex', gap: 12, padding: 16, minHeight: 0, minWidth: 0 }}>
-          {/* minWidth/minHeight: 0 indispensables ici : un flex-item vaut par
-              défaut min-width/min-height "auto", donc refuse de rétrécir en
-              dessous de la taille intrinsèque de son contenu. Le canvas
-              Cytoscape à l'intérieur (width/height: 100%) se mesure alors sur
-              son propre contenu au lieu de la place disponible, et grossit à
-              chaque re-rendu (boucle de redimensionnement) en écrasant le
-              panneau de droite. */}
-          <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
-            <BimGraphViewer
-              elements={visualElements}
-              onNodeSelect={(data) => setSelectedNodeInfo(data)}
-              autoExpandOnClick
-              height="100%"
-            />
+        {explorerTab === 'graph' ? (
+          <div style={{ flex: 1, display: 'flex', gap: 12, padding: 16, minHeight: 0, minWidth: 0 }}>
+            {/* minWidth/minHeight: 0 indispensables ici : un flex-item vaut par
+                défaut min-width/min-height "auto", donc refuse de rétrécir en
+                dessous de la taille intrinsèque de son contenu. Le canvas
+                Cytoscape à l'intérieur (width/height: 100%) se mesure alors sur
+                son propre contenu au lieu de la place disponible, et grossit à
+                chaque re-rendu (boucle de redimensionnement) en écrasant le
+                panneau de droite. */}
+            <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
+              <BimGraphViewer
+                elements={visualElements}
+                onNodeSelect={(data) => setSelectedNodeInfo(data)}
+                autoExpandOnClick
+                height="100%"
+              />
+            </div>
+            <div className="inspector-panel" style={{ width: 380, flexShrink: 0 }}>
+              <NodeInspector node={selectedNodeInfo} onClose={() => setSelectedNodeInfo(null)} />
+            </div>
           </div>
-          <div className="inspector-panel" style={{ width: 380, flexShrink: 0 }}>
-            <NodeInspector node={selectedNodeInfo} onClose={() => setSelectedNodeInfo(null)} />
+        ) : (
+          <div style={{ flex: 1, padding: 16, minHeight: 0, minWidth: 0 }}>
+            <BimModelViewer sources={modelSources} height="100%" />
           </div>
-        </div>
+        )}
       </div>
     )
   }

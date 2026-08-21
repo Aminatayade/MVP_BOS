@@ -100,6 +100,11 @@ services:
   # ---------------------------------------------------------------------------
   api-gateway:
     build: ./api-gateway
+    # APP_VERSION vaut "dev" par défaut : usage local inchangé. Le positionner
+    # (ex: sur le hash court du commit) avant un build donne à l'image un tag
+    # unique, qui ne sera plus jamais écrasé silencieusement par le build
+    # suivant -- condition nécessaire à tout retour en arrière. Voir ROLLBACK.md.
+    image: ghcr.io/devoptim-bos/bos-light-api-gateway:${APP_VERSION:-dev}
     container_name: bos_api_gateway
     restart: always
     ports:
@@ -124,6 +129,8 @@ services:
   # ---------------------------------------------------------------------------
   frontend:
     build: ./frontend
+    # Voir le commentaire sur api-gateway : même schéma de tag de version.
+    image: ghcr.io/devoptim-bos/bos-light-frontend:${APP_VERSION:-dev}
     container_name: bos_frontend
     restart: always
     ports:
@@ -137,7 +144,12 @@ services:
   # MVP BIM — ArcadeDB (graphe BIM + moteur time-series natif)
   # ---------------------------------------------------------------------------
   arcadedb:
-    image: arcadedata/arcadedb:latest
+    # Épinglé par digest (pas par tag) : la version en cours d'exécution est un
+    # build de développement (26.9.1-SNAPSHOT) sans tag numéroté stable qui lui
+    # corresponde -- seul le digest garantit de retomber exactement sur ces
+    # mêmes bits en cas de reconstruction. Voir ROLLBACK.md pour la procédure
+    # de montée de version.
+    image: arcadedata/arcadedb@sha256:76fa9c113e85795c760820cad4fc5287973fc9d006074d286986984cdcb94eb5
     container_name: bos_arcadedb
     restart: always
     environment:
@@ -158,7 +170,9 @@ services:
   # MVP BIM — NATS JetStream (canal d'ingestion live/historique)
   # ---------------------------------------------------------------------------
   nats:
-    image: nats:latest
+    # Épinglé par digest (= v2.14.5 au moment de l'écriture). Voir ROLLBACK.md
+    # pour la procédure de montée de version.
+    image: nats@sha256:026a66a4497c6d7d3eed741781770099c48c755bf3a55b6950d76dd210596eb3
     container_name: bos_nats
     restart: always
     command: "-js -m 8222 --user ${NATS_USER:-bos_admin} --pass ${NATS_PASSWORD:?Définir NATS_PASSWORD dans .env}"
@@ -173,7 +187,9 @@ services:
   # MVP BIM — SeaweedFS (stockage objet des maquettes IFC validées)
   # ---------------------------------------------------------------------------
   seaweedfs:
-    image: chrislusf/seaweedfs:latest
+    # Épinglé par digest (= 4.42 au moment de l'écriture). Voir ROLLBACK.md
+    # pour la procédure de montée de version.
+    image: chrislusf/seaweedfs@sha256:f7cbc8bdbbf60a1aaba7d61784a3bdff3ec1e0657f6ad0b26d5b6ab2cd9d0dc6
     container_name: bos_seaweedfs
     restart: always
     command: 'server -dir=/data -volume.max=5'
@@ -192,6 +208,11 @@ services:
   # ---------------------------------------------------------------------------
   bim_api:
     build: ./bim_validator
+    # Voir le commentaire sur api-gateway : même schéma de tag de version.
+    # bim_api et timeseries_api partagent le même contexte de build
+    # (./bim_validator) mais restent deux images distinctes (entrypoints
+    # différents) : chacune garde son propre nom d'image.
+    image: ghcr.io/devoptim-bos/bos-light-bim-api:${APP_VERSION:-dev}
     container_name: bos_bim_api
     restart: always
     depends_on:
@@ -218,6 +239,8 @@ services:
   # ---------------------------------------------------------------------------
   timeseries_api:
     build: ./bim_validator
+    # Voir le commentaire sur bim_api : même contexte de build, image distincte.
+    image: ghcr.io/devoptim-bos/bos-light-timeseries-api:${APP_VERSION:-dev}
     container_name: bos_timeseries_api
     restart: always
     depends_on:
@@ -242,6 +265,8 @@ services:
   # ---------------------------------------------------------------------------
   bim_validator:
     build: ./bim_validator
+    # Voir le commentaire sur bim_api : même contexte de build, image distincte.
+    image: ghcr.io/devoptim-bos/bos-light-bim-validator:${APP_VERSION:-dev}
     container_name: bos_bim_validator
     profiles: ["tools"]
     environment:

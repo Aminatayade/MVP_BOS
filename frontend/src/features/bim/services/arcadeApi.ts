@@ -76,6 +76,52 @@ export async function getFloorView(floorId: string) {
   }
 }
 
+export interface ModelSource {
+  discipline: string
+  storageUrl: string
+}
+
+/**
+ * Liste les fichiers IFC deja ingeres pour une zone, un par discipline
+ * (Point 6 de la roadmap : jumeau numerique). Chaque backbone spatial
+ * (Building/Floor/Room) et chaque Equipment porte sa propre `storage_url` --
+ * la requete graphe cote backend deduplique deja, on ne fait qu'adapter la
+ * forme de la ligne ici.
+ */
+export async function getModelSources(zone: string): Promise<ModelSource[]> {
+  try {
+    const resp = await apiClient.get('/api/bim/graph/sources', { params: { zone } })
+    const rows = unwrapArcadeResult(resp.data)
+    const sources: ModelSource[] = []
+    for (const row of rows) {
+      const discipline = (row as Record<string, unknown>).discipline as string | undefined
+      const storageUrl = (row as Record<string, unknown>).storage_url as string | undefined
+      if (discipline && storageUrl) sources.push({ discipline, storageUrl })
+    }
+    return sources
+  } catch (error) {
+    throw new Error(extractErrorMessage(error, 'Failed to fetch model sources'))
+  }
+}
+
+/**
+ * Telecharge un IFC source pour le visualiseur 3D. Passe par apiClient (pas
+ * une URL brute dans un <img>/<a>) car la route /api/bim/models/download,
+ * comme toutes les autres routes /api/bim/*, exige le Bearer token Keycloak
+ * -- une URL directe ne pourrait pas porter cet en-tete.
+ */
+export async function downloadModelBytes(storageUrl: string): Promise<ArrayBuffer> {
+  try {
+    const resp = await apiClient.get('/api/bim/models/download', {
+      params: { url: storageUrl },
+      responseType: 'arraybuffer',
+    })
+    return resp.data as ArrayBuffer
+  } catch (error) {
+    throw new Error(extractErrorMessage(error, 'Failed to download IFC model'))
+  }
+}
+
 export async function getBuildings() {
   try {
     const resp = await apiClient.get('/api/bim/graph/buildings')

@@ -1,0 +1,117 @@
+# Construit et publie les images Docker maison (frontend, api-gateway,
+# bim_api, timeseries_api, bim_validator) vers GitHub Container Registry a
+# chaque push sur testifc/main. Objectif : qu'un rollback devienne "redeployer
+# une image deja publiee" plutot que "reconstruire depuis un ancien commit" --
+# voir ROLLBACK.md.
+#
+# N'utilise que le GITHUB_TOKEN fourni automatiquement par Actions : aucun
+# secret/identifiant supplementaire a configurer sur le depot.
+name: Build & push images
+
+on:
+  push:
+    branches: [testifc, main]
+    paths:
+      - "frontend/**"
+      - "api-gateway/**"
+      - "bim_validator/**"
+      - ".github/workflows/build-and-push.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  ORG: devoptim-bos
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.ORG }}/bos-light-frontend
+          tags: |
+            type=ref,event=branch
+            type=sha,format=short
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  api-gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.ORG }}/bos-light-api-gateway
+          tags: |
+            type=ref,event=branch
+            type=sha,format=short
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./api-gateway
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # bim_api, timeseries_api et bim_validator (CLI) partagent le meme contexte
+  # de build (./bim_validator) et le meme Dockerfile -- seul leur entrypoint
+  # differe, defini au niveau de docker-compose.fusion.yml, pas de l'image.
+  # Un seul build produit donc les trois images, evitant un triple travail
+  # redondant pour un contenu identique.
+  bim-services:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta-bim-api
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.ORG }}/bos-light-bim-api
+          tags: |
+            type=ref,event=branch
+            type=sha,format=short
+      - uses: docker/metadata-action@v5
+        id: meta-timeseries-api
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.ORG }}/bos-light-timeseries-api
+          tags: |
+            type=ref,event=branch
+            type=sha,format=short
+      - uses: docker/metadata-action@v5
+        id: meta-bim-validator
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.ORG }}/bos-light-bim-validator
+          tags: |
+            type=ref,event=branch
+            type=sha,format=short
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./bim_validator
+          push: true
+          tags: |
+            ${{ steps.meta-bim-api.outputs.tags }}
+            ${{ steps.meta-timeseries-api.outputs.tags }}
+            ${{ steps.meta-bim-validator.outputs.tags }}

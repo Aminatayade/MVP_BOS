@@ -10,13 +10,19 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@thatopen/components": "^3.4.8",
+    "@thatopen/fragments": "^3.4.7",
+    "@types/three": "^0.185.4",
     "axios": "^1.18.1",
+    "camera-controls": "^3.1.2",
     "cytoscape": "3.34.0",
     "cytoscape-dagre": "^4.0.0",
     "dagre": "^0.8.5",
     "keycloak-js": "^26.2.4",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "three": "^0.185.1",
+    "web-ifc": "^0.0.77"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

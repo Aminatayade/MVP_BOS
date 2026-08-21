@@ -23,6 +23,10 @@ from infrastructure.adapters.arcadedb_repository_adapter import ArcadeDbReposito
 from infrastructure.adapters.seaweed_storage_adapter import SeaweedStorageAdapter
 
 
+def _cypher_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
 class ApiHandler(BaseHTTPRequestHandler):
     END_TO_END_BATCH_ROUTE = "/ingest-batch"
 
@@ -198,6 +202,83 @@ RETURN e AS node
                 self._send_json({"ok": True, "result": resp})
             except Exception as exc:
                 self._send_json({"error": str(exc)}, 500)
+            return
+        if parsed.path == "/graph/sources":
+            # Point 6 de la roadmap (jumeau numerique) : liste les fichiers IFC
+            # sources deja ingeres pour une zone, un par discipline, pour que le
+            # frontend puisse les recharger et les superposer dans le visualiseur
+            # 3D. Seule la discipline "backbone" (ex: ARCHI) cree des noeuds
+            # Building/Floor/Room ; les autres (ELEC, CVC...) n'ajoutent que des
+            # noeuds Equipment -- d'ou une requete SANS label explicite pour
+            # couvrir tous les types de noeuds porteurs de storage_url.
+            params = parse_qs(parsed.query)
+            zone = params.get("zone", [None])[0]
+            if not zone:
+                self._send_json({"error": "zone query param is required"}, 400)
+                return
+
+            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
+            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
+            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
+            arcadedb_password = os.environ.get("ARCADEDB_PASSWORD", "testBIM123")
+            repo = ArcadeDbRepositoryAdapter(
+                base_url=arcadedb_base_url,
+                database=arcadedb_database,
+                username=arcadedb_username,
+                password=arcadedb_password,
+            )
+
+            cypher = f"""
+MATCH (n {{zone: '{_cypher_escape(zone)}'}}) WHERE n.storage_url IS NOT NULL
+RETURN DISTINCT n.discipline AS discipline, n.storage_url AS storage_url
+"""
+            try:
+                resp = repo.query_cypher(cypher)
+                self._send_json({"ok": True, "result": resp})
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, 500)
+            return
+        if parsed.path == "/models/download":
+            # Retelecharge un IFC deja valide depuis SeaweedFS pour le visualiseur
+            # 3D (ThatOpenEngine). Reutilise SeaweedStorageAdapter.download_ifc,
+            # deja utilise cote ingestion -- seule difference : ici la source est
+            # relayee telle quelle au client au lieu d'etre parsee.
+            params = parse_qs(parsed.query)
+            url = params.get("url", [None])[0]
+            if not url:
+                self._send_json({"error": "url query param is required"}, 400)
+                return
+
+            # Controle anti-SSRF : n'accepter que des URLs pointant vers l'hote
+            # SeaweedFS interne configure -- sans ce controle, cette route
+            # deviendrait un relais ouvert vers n'importe quelle adresse
+            # joignable depuis le conteneur bim_api.
+            master_url = os.environ.get("SEAWEEDFS_MASTER_URL", "http://localhost:9333")
+            expected_host = urlparse(master_url).hostname
+            requested_host = urlparse(url).hostname
+            if not requested_host or requested_host != expected_host:
+                self._send_json({"error": "url host is not an authorized storage host"}, 400)
+                return
+
+            seaweed_reader = SeaweedStorageAdapter()
+            local_path = None
+            try:
+                local_path = seaweed_reader.download_ifc(url)
+                with open(local_path, "rb") as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, 502)
+            finally:
+                if local_path and os.path.exists(local_path):
+                    try:
+                        os.unlink(local_path)
+                    except OSError:
+                        pass
             return
         self._send_json({"error": "Not found"}, 404)
 

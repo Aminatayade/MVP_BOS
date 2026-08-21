@@ -25,8 +25,10 @@ NOTES:
     le frontend, jamais devenir un proxy ouvert vers le réseau Docker interne.
 """
 
+import json
 import os
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 import httpx
 
 from security import verify_allowed_roles
@@ -106,6 +108,47 @@ async def _forward_post_json(base_url: str, path: str, request: Request, timeout
     return await _relay_response(response)
 
 
+async def _forward_get_binary(base_url: str, path: str, request: Request, timeout: httpx.Timeout) -> StreamingResponse:
+    # _forward_get/_relay_response appellent response.json() : inadapte a un
+    # flux binaire (fichier IFC). httpx.AsyncClient.stream() relaie le corps
+    # au fil de l'eau, sans le charger entierement en memoire cote gateway --
+    # meme logique de streaming deja justifiee pour ingest-batch, en sens
+    # inverse (telechargement plutot qu'upload).
+    upstream_url = f"{base_url}{path}"
+    client = httpx.AsyncClient(timeout=timeout)
+    try:
+        upstream_request = client.build_request("GET", upstream_url, params=dict(request.query_params))
+        response = await client.send(upstream_request, stream=True)
+    except httpx.TimeoutException:
+        await client.aclose()
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Le service BIM n'a pas répondu à temps.")
+    except httpx.RequestError:
+        await client.aclose()
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Le service BIM est indisponible.")
+
+    if response.status_code >= 400:
+        body = await response.aread()
+        await response.aclose()
+        await client.aclose()
+        try:
+            detail = _upstream_error_message(json.loads(body))
+        except ValueError:
+            detail = "Requête invalide."
+        status_code = response.status_code if response.status_code < 500 else status.HTTP_502_BAD_GATEWAY
+        raise HTTPException(status_code=status_code, detail=detail)
+
+    async def body_iterator():
+        try:
+            async for chunk in response.aiter_bytes():
+                yield chunk
+        finally:
+            await response.aclose()
+            await client.aclose()
+
+    media_type = response.headers.get("content-type", "application/octet-stream")
+    return StreamingResponse(body_iterator(), media_type=media_type)
+
+
 # --- Graphe BIM (ArcadeDB, via bim_api) -------------------------------------
 
 @router.get("/graph/buildings")
@@ -136,6 +179,18 @@ async def graph_room_equipment(request: Request):
 @router.get("/graph/view")
 async def graph_view(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/view", request, SHORT_TIMEOUT)
+
+
+@router.get("/graph/sources")
+async def graph_sources(request: Request):
+    return await _forward_get(BIM_API_INTERNAL_URL, "/graph/sources", request, SHORT_TIMEOUT)
+
+
+# --- Jumeau numérique (point 6 de la roadmap) --------------------------------
+
+@router.get("/models/download")
+async def models_download(request: Request):
+    return await _forward_get_binary(BIM_API_INTERNAL_URL, "/models/download", request, LONG_TIMEOUT)
 
 
 # --- Validation / ingestion IFC (bim_api) -----------------------------------
