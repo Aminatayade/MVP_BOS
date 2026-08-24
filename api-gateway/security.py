@@ -30,6 +30,13 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{KEYCLOAK_EXTERNAL_URL}/protocol
 # Rôles autorisés à accéder aux fonctions de configuration (BOS Light ET BIM)
 ALLOWED_ROLES = {"Administrateur", "Configurateur"}
 
+# Rôles autorisés à accéder à BOS Exécution (web-app-execution) -- inclut Client
+# en plus, contrairement à ALLOWED_ROLES ci-dessus qui protège les routes de
+# configuration/import BIM. Volontairement une constante et une dépendance
+# séparées : ne jamais ajouter "Client" à ALLOWED_ROLES, ça donnerait par
+# erreur accès aux routes de configuration à ce rôle.
+EXECUTION_ALLOWED_ROLES = {"Administrateur", "Configurateur", "Client"}
+
 
 def get_current_user_roles(token: str = Depends(oauth2_scheme)) -> list:
     """
@@ -60,5 +67,18 @@ def verify_allowed_roles(roles: list = Depends(get_current_user_roles)) -> list:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Accès refusé : Seuls les rôles Administrateur et Configurateur sont autorisés."
+        )
+    return roles
+
+
+def verify_execution_allowed_roles(roles: list = Depends(get_current_user_roles)) -> list:
+    """
+    Dépendance de sécurité pour BOS Exécution : vérifie si l'utilisateur possède
+    au moins un des rôles autorisés (Administrateur, Configurateur ou Client).
+    """
+    if not set(roles).intersection(EXECUTION_ALLOWED_ROLES):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès refusé : Seuls les rôles Administrateur, Configurateur et Client sont autorisés."
         )
     return roles

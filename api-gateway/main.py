@@ -28,17 +28,21 @@ from sqlalchemy.orm import Session
 from database import engine, get_db, Base
 from models import PhaseModel
 import bim_proxy
-from security import verify_allowed_roles
+from security import verify_allowed_roles, verify_execution_allowed_roles
 
 # Génération / Vérification de la présence des tables en BDD au démarrage
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="BOS Light - API Gateway")
 
-# Configuration du CORS pour autoriser le Frontend React (Vite)
+# Configuration du CORS pour autoriser les deux frontends React (Vite) :
+# BOS Configurateur (5173) et BOS Exécution (5174), tous deux servis par
+# cette même API Gateway partagée.
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
 ]
 
 app.add_middleware(
@@ -64,6 +68,15 @@ def verify_config_access(roles: list = Depends(verify_allowed_roles)):
     return {
         "status": "success",
         "message": "Accès autorisé à l'application de configuration !",
+        "user_roles": roles
+    }
+
+@app.get("/api/execution-access")
+def verify_execution_access(roles: list = Depends(verify_execution_allowed_roles)):
+    """Vérifie et valide l'accès à l'application BOS Exécution (Admin / Configurateur / Client)."""
+    return {
+        "status": "success",
+        "message": "Accès autorisé à l'application BOS Exécution !",
         "user_roles": roles
     }
 
