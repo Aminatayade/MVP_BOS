@@ -32,6 +32,6 @@ Administrateur, Configurateur, **Client**.
 
 ## Historique
 
-Ce dossier a été copié depuis le dépôt `web-app-execution` (branche `client`), qui reste
-disponible séparément comme référence historique mais n'est plus synchronisé avec ce
-dépôt — tout développement actif se fait ici.
+Ce dossier a été copié depuis le dépôt `web-app-execution` (branche `client` de
+`devoptim-Bos/MVP`), conservé sur GitHub comme référence historique mais plus présent en
+local ni synchronisé avec ce dépôt — tout développement actif se fait ici.
