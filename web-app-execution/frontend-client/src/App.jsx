@@ -25,6 +25,7 @@ import { useEffect, useState, useRef } from 'react';
 import keycloak from './services/keycloak';
 import apiClient from './services/apiClient';
 import { ProtectedRoute } from './ProtectedRoute';
+import BimViewer from './features/bim/BimViewer';
 import './App.css';
 
 const DISPLAYED_ROLES = ['Administrateur', 'Configurateur', 'Client'];
@@ -128,6 +129,8 @@ function App() {
                   <p className="panel-hint">Aucun test lancé pour le moment.</p>
                 )}
               </div>
+
+              <BimViewer />
             </div>
           </ProtectedRoute>
         )}

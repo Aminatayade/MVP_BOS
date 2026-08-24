@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 import httpx
 
-from security import verify_allowed_roles
+from security import verify_allowed_roles, verify_execution_allowed_roles
 
 BIM_API_INTERNAL_URL = os.getenv("BIM_API_INTERNAL_URL", "http://bim_api:8000").rstrip("/")
 TIMESERIES_API_INTERNAL_URL = os.getenv("TIMESERIES_API_INTERNAL_URL", "http://timeseries_api:8001").rstrip("/")
@@ -44,7 +44,7 @@ MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 SHORT_TIMEOUT = httpx.Timeout(10.0)
 LONG_TIMEOUT = httpx.Timeout(120.0)
 
-router = APIRouter(prefix="/api/bim", tags=["bim-proxy"], dependencies=[Depends(verify_allowed_roles)])
+router = APIRouter(prefix="/api/bim", tags=["bim-proxy"])
 
 
 def _upstream_error_message(payload: dict) -> str:
@@ -149,74 +149,77 @@ async def _forward_get_binary(base_url: str, path: str, request: Request, timeou
     return StreamingResponse(body_iterator(), media_type=media_type)
 
 
-# --- Graphe BIM (ArcadeDB, via bim_api) -------------------------------------
+# --- Graphe BIM (ArcadeDB, via bim_api) -- Configurateur uniquement ---------
 
-@router.get("/graph/buildings")
+@router.get("/graph/buildings", dependencies=[Depends(verify_allowed_roles)])
 async def graph_buildings(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/buildings", request, SHORT_TIMEOUT)
 
 
-@router.get("/graph/floors")
+@router.get("/graph/floors", dependencies=[Depends(verify_allowed_roles)])
 async def graph_floors(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/floors", request, SHORT_TIMEOUT)
 
 
-@router.get("/graph/equipment")
+@router.get("/graph/equipment", dependencies=[Depends(verify_allowed_roles)])
 async def graph_equipment(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/equipment", request, SHORT_TIMEOUT)
 
 
-@router.get("/graph/neighbors")
+@router.get("/graph/neighbors", dependencies=[Depends(verify_allowed_roles)])
 async def graph_neighbors(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/neighbors", request, SHORT_TIMEOUT)
 
 
-@router.get("/graph/room-equipment")
+@router.get("/graph/room-equipment", dependencies=[Depends(verify_allowed_roles)])
 async def graph_room_equipment(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/room-equipment", request, SHORT_TIMEOUT)
 
 
-@router.get("/graph/locations")
+@router.get("/graph/locations", dependencies=[Depends(verify_allowed_roles)])
 async def graph_locations(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/locations", request, SHORT_TIMEOUT)
 
 
-@router.get("/graph/location-readings")
+@router.get("/graph/location-readings", dependencies=[Depends(verify_allowed_roles)])
 async def graph_location_readings(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/location-readings", request, SHORT_TIMEOUT)
 
 
-@router.get("/graph/view")
+@router.get("/graph/view", dependencies=[Depends(verify_allowed_roles)])
 async def graph_view(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/view", request, SHORT_TIMEOUT)
 
 
-@router.get("/graph/sources")
+# --- Jumeau numérique (point 6 de la roadmap) --------------------------------
+# Seules routes en lecture accessibles au rôle Client (BOS Exécution) : la
+# maquette 3D est consultable une fois ingérée, mais l'ingestion elle-même
+# (POST /validate, /ingest-batch ci-dessous) reste réservée à Configurateur.
+
+@router.get("/graph/sources", dependencies=[Depends(verify_execution_allowed_roles)])
 async def graph_sources(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/sources", request, SHORT_TIMEOUT)
 
 
-# --- Jumeau numérique (point 6 de la roadmap) --------------------------------
-
-@router.get("/models/download")
+@router.get("/models/download", dependencies=[Depends(verify_execution_allowed_roles)])
 async def models_download(request: Request):
     return await _forward_get_binary(BIM_API_INTERNAL_URL, "/models/download", request, LONG_TIMEOUT)
 
 
-# --- Validation / ingestion IFC (bim_api) -----------------------------------
+# --- Validation / ingestion IFC (bim_api) -- Configurateur uniquement -------
 
-@router.post("/validate")
+@router.post("/validate", dependencies=[Depends(verify_allowed_roles)])
 async def validate_batch(request: Request):
     return await _forward_post_json(BIM_API_INTERNAL_URL, "/validate", request, LONG_TIMEOUT)
 
 
-@router.post("/ingest-batch")
+@router.post("/ingest-batch", dependencies=[Depends(verify_allowed_roles)])
 async def ingest_batch(request: Request):
     return await _forward_post_json(BIM_API_INTERNAL_URL, "/ingest-batch", request, LONG_TIMEOUT)
 
 
-# --- Mesures temps réel (timeseries_api) ------------------------------------
+# --- Mesures temps réel (timeseries_api) -- Configurateur uniquement --------
 
-@router.get("/timeseries/readings")
+@router.get("/timeseries/readings", dependencies=[Depends(verify_allowed_roles)])
 async def timeseries_readings(request: Request):
     return await _forward_get(TIMESERIES_API_INTERNAL_URL, "/timeseries/readings", request, SHORT_TIMEOUT)
