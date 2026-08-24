@@ -301,6 +301,42 @@ services:
     networks:
       - fusion_network
 
+  # ---------------------------------------------------------------------------
+  # MVP BIM — Grafana (cockpits time-series, embarqué dans le frontend BOS
+  # Light en mode kiosk : le client voit des graphiques, pas "Grafana"). La
+  # datasource Infinity interroge ArcadeDB directement via ses endpoints
+  # /api/v1/ts/{db}/grafana/* (compatibles DataFrame Grafana nativement, pas
+  # besoin de passer par l'API Gateway) avec l'utilisateur ArcadeDB dédié
+  # "grafana" (lecture seule, cf. ArcadeDB server-users).
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: bos_grafana
+    restart: always
+    environment:
+      - GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Définir GRAFANA_ADMIN_PASSWORD dans .env}
+      # Sans ça, Grafana refuse d'être chargé dans un <iframe> (en-tête
+      # X-Frame-Options par défaut) -- indispensable pour l'embed kiosk.
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      # Accès anonyme en lecture seule (rôle Viewer) : la page qui embarque
+      # l'iframe est déjà derrière l'auth Keycloak du frontend BOS Light, pas
+      # besoin d'un second login Grafana par-dessus pour le client final.
+      # Grafana lui-même n'est pas exposé publiquement (cf. "ports" ci-dessous).
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      # Comme Keycloak : le navigateur doit atteindre Grafana directement pour
+      # afficher l'iframe (contrairement à ArcadeDB Studio/NATS monitoring,
+      # qui sont debug-only et donc lies a 127.0.0.1).
+      - "3000:3000"
+    depends_on:
+      - arcadedb
+    networks:
+      - fusion_network
+
 networks:
   fusion_network:
     driver: bridge
@@ -309,3 +345,4 @@ volumes:
   postgres_data:
   postgres_app_data:
   arcadedb_data:
+  grafana_data:

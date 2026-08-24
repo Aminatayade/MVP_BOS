@@ -98,7 +98,12 @@ class NatsJetStreamAdapter(MessageQueuePort):
             while True:
                 try:
                     messages = await pull_subscription.fetch(batch=10, timeout=5)
-                except nats.errors.TimeoutError:
+                # nats-py lève parfois nats.errors.TimeoutError, parfois
+                # directement asyncio.TimeoutError (classe distincte malgré le
+                # nom) selon le chemin interne emprunté -- n'attraper que la
+                # première laissait le thread mourir silencieusement dès le
+                # premier passage sans message, sans jamais redémarrer.
+                except (nats.errors.TimeoutError, TimeoutError):
                     continue
 
                 for msg in messages:

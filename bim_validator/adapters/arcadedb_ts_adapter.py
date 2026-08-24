@@ -115,16 +115,29 @@ class ArcadeDbTimeseriesAdapter(TimeseriesRepositoryPort):
             return
 
         body = "\n".join(_to_line_protocol(message) for message in messages)
-        response = self._session.post(
+        response = self._post_line_protocol(body)
+
+        if not response.ok and "unknown timeseries type" in response.text.lower():
+            # Observé en prod : le type TIMESERIES peut disparaître du schéma
+            # runtime d'ArcadeDB en cours de fonctionnement, sans redémarrage
+            # du serveur (comportement instable de cette feature, encore
+            # SNAPSHOT côté ArcadeDB). Sans ce filet, le consumer NATS reste
+            # bloqué à re-livrer indéfiniment le même message en échec.
+            self.ensure_schema()
+            response = self._post_line_protocol(body)
+
+        if not response.ok:
+            raise RuntimeError(
+                f"ArcadeDB timeseries write failed (status={response.status_code}): {response.text}"
+            )
+
+    def _post_line_protocol(self, body: str):
+        return self._session.post(
             f"{self._write_endpoint}?precision=ns",
             data=body.encode("utf-8"),
             headers={"Content-Type": "text/plain"},
             timeout=self._timeout_seconds,
         )
-        if not response.ok:
-            raise RuntimeError(
-                f"ArcadeDB timeseries write failed (status={response.status_code}): {response.text}"
-            )
 
     def query_readings(
         self,

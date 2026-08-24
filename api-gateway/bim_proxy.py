@@ -176,6 +176,16 @@ async def graph_room_equipment(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/room-equipment", request, SHORT_TIMEOUT)
 
 
+@router.get("/graph/locations")
+async def graph_locations(request: Request):
+    return await _forward_get(BIM_API_INTERNAL_URL, "/graph/locations", request, SHORT_TIMEOUT)
+
+
+@router.get("/graph/location-readings")
+async def graph_location_readings(request: Request):
+    return await _forward_get(BIM_API_INTERNAL_URL, "/graph/location-readings", request, SHORT_TIMEOUT)
+
+
 @router.get("/graph/view")
 async def graph_view(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/view", request, SHORT_TIMEOUT)
