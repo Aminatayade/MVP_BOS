@@ -4,16 +4,17 @@
 #
 # INPUTS:
 #   - Images officielles Docker Hub / Quay.io (PostgreSQL 16, Keycloak 24)
-#   - Builds locaux via Dockerfiles relatifs (./api-gateway, ./frontend)
+#   - Builds locaux via Dockerfiles relatifs (./api-gateway, ./frontend, ./frontend-client)
 #   - Variables d'environnement inter-conteneurs (Réseau Docker & Identifiants)
 #
 # OUTPUTS:
 #   - Conteneurs en cours d'exécution sur le réseau privé Docker 'default' :
-#       • bos_postgres     : BDD Identity / IAM Keycloak (Port externe 5432)
-#       • bos_postgres_app : BDD Métier applicative (Port externe 5433)
-#       • bos_keycloak     : Serveur d'authentification OIDC Keycloak (Port 8080)
-#       • bos_api_gateway  : API Gateway FastAPI (Port 8000)
-#       • bos_frontend     : Application Web React / Vite (Port 5173)
+#       • bos_postgres        : BDD Identity / IAM Keycloak (Port externe 5432)
+#       • bos_postgres_app    : BDD Métier applicative (Port externe 5433)
+#       • bos_keycloak        : Serveur d'authentification OIDC Keycloak (Port 8080)
+#       • bos_api_gateway     : API Gateway FastAPI (Port 8000) -- partagée par les 2 frontends
+#       • bos_frontend        : Application Web BOS Configurateur, React / Vite (Port 5173)
+#       • bos_frontend_client : Application Web BOS Exécution, React / Vite (Port 5174)
 #
 # DEPENDENCIES:
 #   - Docker Desktop / Docker Engine v20+ avec plugin Docker Compose v2+
@@ -107,6 +108,18 @@ services:
     restart: always
     ports:
       - "5173:5173"
+    depends_on:
+      - api-gateway
+
+  # ---------------------------------------------------------------------------
+  # INTERFACE UTILISATEUR & WEB APP CLIENT / BOS EXÉCUTION (REACT / VITE)
+  # ---------------------------------------------------------------------------
+  frontend-client:
+    build: ./frontend-client
+    container_name: bos_frontend_client
+    restart: always
+    ports:
+      - "5174:5173"
     depends_on:
       - api-gateway
 
