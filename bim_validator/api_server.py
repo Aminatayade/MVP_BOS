@@ -21,6 +21,35 @@ from application.bim_ingestion_service import BimIngestionService
 from domain.entities import ValidationReport
 from infrastructure.adapters.arcadedb_repository_adapter import ArcadeDbRepositoryAdapter
 from infrastructure.adapters.seaweed_storage_adapter import SeaweedStorageAdapter
+from datetime import datetime
+
+
+def _bucket_and_average(rows: list[dict], *, bucket_seconds: int) -> list[dict]:
+    """Regroupe des lectures brutes multi-équipements par fenêtre temporelle et
+    moyenne leur valeur -- transforme N séries (une par équipement) en UNE
+    seule série exploitable par un panel Grafana au niveau Room/Floor."""
+    buckets: dict[int, list[float]] = {}
+    for row in rows:
+        ts_raw = row.get("ts")
+        value = row.get("value")
+        if ts_raw is None or value is None:
+            continue
+        try:
+            dt = datetime.strptime(str(ts_raw), "%Y-%m-%d %H:%M:%S.%f")
+        except ValueError:
+            continue
+        bucket_epoch = int(dt.timestamp() // bucket_seconds) * bucket_seconds
+        buckets.setdefault(bucket_epoch, []).append(float(value))
+
+    readings = []
+    for epoch in sorted(buckets):
+        values = buckets[epoch]
+        readings.append({
+            "ts": datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M:%S.000"),
+            "value": round(sum(values) / len(values), 2),
+            "sample_count": len(values),
+        })
+    return readings
 
 
 class ApiHandler(BaseHTTPRequestHandler):
@@ -196,6 +225,100 @@ RETURN e AS node
             try:
                 resp = repo.query_cypher(cypher)
                 self._send_json({"ok": True, "result": resp})
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, 500)
+            return
+        if parsed.path == "/graph/locations":
+            # Rooms ET Floors dans une seule liste : certaines maquettes (ex:
+            # celles sans IfcSpace) rattachent les équipements directement au
+            # Floor plutôt qu'à un Room -- le sélecteur Grafana doit couvrir
+            # les deux niveaux, pas seulement les Rooms.
+            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
+            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
+            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
+            arcadedb_password = os.environ.get("ARCADEDB_PASSWORD", "testBIM123")
+            repo = ArcadeDbRepositoryAdapter(
+                base_url=arcadedb_base_url,
+                database=arcadedb_database,
+                username=arcadedb_username,
+                password=arcadedb_password,
+            )
+            try:
+                locations = []
+                for label in ("Room", "Floor"):
+                    resp = repo.query_cypher(f"MATCH (n:{label}) RETURN n LIMIT 1000")
+                    rows = resp.get("result") or []
+                    for row in rows:
+                        node = row.get("n", row)
+                        gid = node.get("global_id")
+                        if not gid:
+                            continue
+                        locations.append({
+                            "global_id": gid,
+                            "name": node.get("name") or gid,
+                            "type": label,
+                            "zone": node.get("zone"),
+                        })
+                self._send_json({"ok": True, "locations": locations})
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, 500)
+            return
+        if parsed.path == "/graph/location-readings":
+            # Moyenne agrégée d'une métrique pour TOUS les équipements
+            # rattachés (directement) à un Room ou Floor donné -- le niveau
+            # métier le plus pertinent pour un cockpit client (le schéma
+            # spatial Building->Floor->Room est fiable, contrairement au
+            # rattachement par équipement individuel qui dépend de la qualité
+            # de nommage de chaque maquette).
+            params = parse_qs(parsed.query)
+            gid = params.get("global_id", [None])[0]
+            metric = params.get("metric", [None])[0]
+            bucket_seconds = int(params.get("bucket_seconds", ["10"])[0])
+            raw_limit = int(params.get("raw_limit", ["5000"])[0])
+            if not gid or not metric:
+                self._send_json({"error": "global_id and metric query params are required"}, 400)
+                return
+
+            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
+            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
+            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
+            arcadedb_password = os.environ.get("ARCADEDB_PASSWORD", "testBIM123")
+            repo = ArcadeDbRepositoryAdapter(
+                base_url=arcadedb_base_url,
+                database=arcadedb_database,
+                username=arcadedb_username,
+                password=arcadedb_password,
+            )
+            try:
+                escaped_gid = gid.replace("'", "\\'")
+                neighbors_cy = f"""
+MATCH (e:Equipment)-[:LOCATED_IN]->(n {{global_id: '{escaped_gid}'}})
+RETURN e.global_id AS gid
+"""
+                resp = repo.query_cypher(neighbors_cy)
+                rows = resp.get("result") or []
+                equipment_ids = sorted({row.get("gid") for row in rows if row.get("gid")})
+
+                if not equipment_ids:
+                    self._send_json({"ok": True, "equipment_count": 0, "readings": []})
+                    return
+
+                escaped_metric = metric.replace("'", "\\'")
+                id_list = ", ".join("'" + eid.replace("'", "\\'") + "'" for eid in equipment_ids)
+                sql = (
+                    "SELECT ts, value FROM EquipmentReading WHERE "
+                    f"metric = '{escaped_metric}' AND global_id IN [{id_list}] "
+                    f"ORDER BY ts ASC LIMIT {raw_limit}"
+                )
+                ts_resp = repo.query_sql(sql)
+                ts_rows = ts_resp.get("result") or []
+                readings = _bucket_and_average(ts_rows, bucket_seconds=bucket_seconds)
+                self._send_json({
+                    "ok": True,
+                    "equipment_count": len(equipment_ids),
+                    "raw_points": len(ts_rows),
+                    "readings": readings,
+                })
             except Exception as exc:
                 self._send_json({"error": str(exc)}, 500)
             return
