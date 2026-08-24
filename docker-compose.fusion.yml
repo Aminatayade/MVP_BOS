@@ -128,7 +128,7 @@ services:
   # BOS Light — Frontend (React / Vite), seul front actif du produit fusionné
   # ---------------------------------------------------------------------------
   frontend:
-    build: ./frontend
+    build: ./web-app-configuration/frontend
     # Voir le commentaire sur api-gateway : même schéma de tag de version.
     image: ghcr.io/devoptim-bos/bos-light-frontend:${APP_VERSION:-dev}
     container_name: bos_frontend
@@ -147,7 +147,7 @@ services:
   # la route /api/execution-access dans api-gateway/main.py.
   # ---------------------------------------------------------------------------
   frontend-client:
-    build: ./frontend-client
+    build: ./web-app-execution/frontend-client
     image: ghcr.io/devoptim-bos/bos-light-frontend-client:${APP_VERSION:-dev}
     container_name: bos_frontend_client
     restart: always

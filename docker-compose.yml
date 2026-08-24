@@ -103,7 +103,7 @@ services:
   # INTERFACE UTILISATEUR & WEB APP (REACT / VITE)
   # ---------------------------------------------------------------------------
   frontend:
-    build: ./frontend
+    build: ./web-app-configuration/frontend
     container_name: bos_frontend
     restart: always
     ports:
@@ -115,7 +115,7 @@ services:
   # INTERFACE UTILISATEUR & WEB APP CLIENT / BOS EXÉCUTION (REACT / VITE)
   # ---------------------------------------------------------------------------
   frontend-client:
-    build: ./frontend-client
+    build: ./web-app-execution/frontend-client
     container_name: bos_frontend_client
     restart: always
     ports:

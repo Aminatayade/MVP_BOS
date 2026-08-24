@@ -2,8 +2,9 @@
 
 **BOS Light MVP** est composé de trois applications distinctes : **BOS Configurateur**,
 **BOS Exécution**, et **userapp** (pas encore démarrée). Ce dépôt unique héberge les deux
-premières — deux frontends séparés (`frontend/` et `frontend-client/`) qui partagent un seul
-et même backend (Keycloak, PostgreSQL ×2, API Gateway, ArcadeDB, NATS, SeaweedFS). C'est
+premières — deux frontends séparés (`web-app-configuration/frontend/` et
+`web-app-execution/frontend-client/`) qui partagent un seul et même backend (Keycloak,
+PostgreSQL ×2, API Gateway, ArcadeDB, NATS, SeaweedFS). C'est
 l'architecture cible décrite dans la roadmap : Configurateur et Exécution ne sont **pas** deux
 backends séparés qui se connectent l'un à l'autre, mais deux frontends sur un backend commun.
 
@@ -159,21 +160,27 @@ bos-light-mvp
 │  ├─ scripts/                 # Utilitaires ponctuels (préparation de maquettes de test)
 │  ├─ tests/
 │  └─ maquettes/                # Fichiers IFC de test
-├─ frontend/                              # BOS Configurateur (:5173)
-│  ├─ src/
-│  │  ├─ App.jsx, main.jsx, ProtectedRoute.jsx
-│  │  ├─ services/keycloak.js, apiClient.js
-│  │  └─ features/bim/
-│  │     ├─ BimExplorer.tsx                     # Onglets Graphe / Maquette 3D
-│  │     ├─ components/BimGraphViewer.tsx        # Visualisation du graphe (Cytoscape)
-│  │     ├─ components/BimModelViewer.tsx        # Visualisation 3D (ThatOpenEngine)
-│  │     ├─ components/NodeInspector.tsx
-│  │     └─ services/arcadeApi.ts
-│  ├─ public/wasm/web-ifc.wasm    # Binaire WASM auto-hébergé (parsing IFC côté navigateur)
-│  └─ Dockerfile
-└─ frontend-client/                       # BOS Exécution (:5174)
-   ├─ src/
-   │  ├─ App.jsx, main.jsx, ProtectedRoute.jsx
-   │  └─ services/keycloak.js, apiClient.js
-   └─ Dockerfile
+├─ web-app-configuration/                 # Code du frontend BOS Configurateur uniquement
+│  └─ frontend/                           # (:5173)
+│     ├─ src/
+│     │  ├─ App.jsx, main.jsx, ProtectedRoute.jsx
+│     │  ├─ services/keycloak.js, apiClient.js
+│     │  └─ features/bim/
+│     │     ├─ BimExplorer.tsx                     # Onglets Graphe / Maquette 3D
+│     │     ├─ components/BimGraphViewer.tsx        # Visualisation du graphe (Cytoscape)
+│     │     ├─ components/BimModelViewer.tsx        # Visualisation 3D (ThatOpenEngine)
+│     │     ├─ components/NodeInspector.tsx
+│     │     └─ services/arcadeApi.ts
+│     ├─ public/wasm/web-ifc.wasm    # Binaire WASM auto-hébergé (parsing IFC côté navigateur)
+│     └─ Dockerfile
+└─ web-app-execution/                     # Code du frontend BOS Exécution uniquement
+   └─ frontend-client/                    # (:5174)
+      ├─ src/
+      │  ├─ App.jsx, main.jsx, ProtectedRoute.jsx
+      │  └─ services/keycloak.js, apiClient.js
+      └─ Dockerfile
 ```
+
+Le backend (`api-gateway/`, `bim_validator/`, `keycloak/`) est **partagé** et reste à la
+racine — seuls les deux frontends sont rangés chacun dans leur propre sous-dossier
+(`web-app-configuration/` et `web-app-execution/`).

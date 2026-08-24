@@ -1,6 +1,6 @@
 # Frontend — BOS Configurateur
 
-Interface web du **Configurateur BOS Light** (React / Vite) — voir le [README racine](../README.md)
+Interface web du **Configurateur BOS Light** (React / Vite) — voir le [README racine](../../README.md)
 pour l'architecture complète (backend partagé, les deux frontends, RBAC).
 
 ## Ce que fait cette app
@@ -18,7 +18,7 @@ pour l'architecture complète (backend partagé, les deux frontends, RBAC).
 ## Lancer en local (hors Docker, hot-reload)
 
 ```bash
-cd frontend
+cd web-app-configuration/frontend
 npm install
 npm run dev
 ```

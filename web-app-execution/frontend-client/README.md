@@ -1,6 +1,6 @@
 # Frontend Client — BOS Exécution
 
-Interface web de **BOS Exécution** (React / Vite) — voir le [README racine](../README.md)
+Interface web de **BOS Exécution** (React / Vite) — voir le [README racine](../../README.md)
 pour l'architecture complète (backend partagé, les deux frontends, RBAC).
 
 ## Ce que fait cette app
@@ -17,7 +17,7 @@ contenu métier (jumeau numérique, cockpits) reste à construire.
 ## Lancer en local (hors Docker, hot-reload)
 
 ```bash
-cd frontend-client
+cd web-app-execution/frontend-client
 npm install
 npm run dev -- --port 5174
 ```
