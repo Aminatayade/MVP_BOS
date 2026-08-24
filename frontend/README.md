@@ -1,16 +1,32 @@
-# React + Vite
+# Frontend — BOS Configurateur
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Interface web du **Configurateur BOS Light** (React / Vite) — voir le [README racine](../README.md)
+pour l'architecture complète (backend partagé, les deux frontends, RBAC).
 
-Currently, two official plugins are available:
+## Ce que fait cette app
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Connexion Keycloak (client OIDC `web-app-frontend`)
+- Workflow du projet — cartouches et étapes métier
+- Import & validation de maquettes IFC (une ou plusieurs disciplines)
+- Explorateur BIM : visualisation du graphe spatial (Cytoscape) et visualisation 3D du
+  jumeau numérique (ThatOpenEngine)
 
-## React Compiler
+## Port
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+`5173` — servi par le conteneur `bos_frontend`.
 
-## Expanding the ESLint configuration
+## Lancer en local (hors Docker, hot-reload)
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Nécessite l'API Gateway (`bos_api_gateway`, port 8000) et Keycloak (`bos_keycloak`, port
+8080) déjà démarrés — voir le README racine pour la commande `docker compose`.
+
+## Rôles Keycloak autorisés
+
+Administrateur, Configurateur. Le rôle Client reçoit un écran 403 (c'est BOS Exécution,
+`frontend-client/`, qui lui est destiné).

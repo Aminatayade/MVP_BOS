@@ -107,10 +107,13 @@ docker compose -f docker-compose.fusion.yml ps
 ```
 
 Accès dans le navigateur :
-- BOS Configurateur : http://localhost:5173
-- BOS Exécution : http://localhost:5174
-- API Gateway (Swagger) : http://localhost:8000/docs
-- Console d'administration Keycloak : http://localhost:8080
+
+| App | URL | Conteneur |
+| :--- | :--- | :--- |
+| **BOS Configurateur** | http://localhost:5173 | `bos_frontend` |
+| **BOS Exécution** | http://localhost:5174 | `bos_frontend_client` |
+| API Gateway (Swagger) | http://localhost:8000/docs | `bos_api_gateway` |
+| Console d'administration Keycloak | http://localhost:8080 | `bos_keycloak` |
 
 Pour tout arrêter (les données restent dans les volumes nommés) :
 ```bash
