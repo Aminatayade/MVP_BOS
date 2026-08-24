@@ -14,8 +14,8 @@
 
 .PARAMETER ProjectName
     Prefixe des volumes Docker (COMPOSE_PROJECT_NAME). Par defaut, lit la
-    valeur de bos-light-mvp/.env si presente, sinon retombe sur
-    "bos-light-mvp" (valeur par defaut de .env.example).
+    valeur de web-app-configuration/.env si presente, sinon retombe sur
+    "web-app-configuration" (valeur par defaut de .env.example).
 
 .EXAMPLE
     ./scripts/backup-volumes.ps1
@@ -32,7 +32,7 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 
 if (-not $ProjectName) {
     $envFile = Join-Path $RepoRoot ".env"
-    $ProjectName = "bos-light-mvp"
+    $ProjectName = "web-app-configuration"
     if (Test-Path $envFile) {
         $line = Get-Content $envFile | Where-Object { $_ -match "^\s*COMPOSE_PROJECT_NAME\s*=" } | Select-Object -First 1
         if ($line) {

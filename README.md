@@ -1,10 +1,15 @@
-# 🚀 BOS Light — Configurateur (MVP fusionné)
+# 🚀 web-app-configuration — BOS Light
 
-Ce dépôt est le **produit fusionné** BOS Light : l'application de configuration avec
-authentification & RBAC (le MVP d'origine) **et** le moteur BIM — validation/ingestion de
-maquettes IFC, visualisation du graphe spatial, et visualisation 3D du jumeau numérique
-(ThatOpenEngine). Un seul `git clone` + `docker compose up` suffit pour faire tourner
-l'ensemble : plus besoin d'un second dossier ni d'un transfert de fichiers séparé.
+**BOS Light MVP** est composé de trois applications distinctes : **web-app-configuration**
+(ce dépôt), **web-app-execution**, et **userapp**. Ce nom de dossier (et non
+« bos-light-mvp », ambigu — c'est le nom du produit global, pas de cette application
+précise) identifie sans confusion laquelle des trois est ici.
+
+Ce dépôt est le **produit fusionné** de l'application de configuration avec authentification
+& RBAC (le MVP d'origine) **et** le moteur BIM — validation/ingestion de maquettes IFC,
+visualisation du graphe spatial, et visualisation 3D du jumeau numérique (ThatOpenEngine).
+Un seul `git clone` + `docker compose up` suffit pour faire tourner l'ensemble : plus besoin
+d'un second dossier ni d'un transfert de fichiers séparé.
 
 ---
 
@@ -74,8 +79,8 @@ Principales routes exposées par l'API Gateway :
 ### Procédure de déploiement
 
 ```bash
-git clone <URL_DU_DEPOT_GIT>
-cd bos-light-mvp
+git clone <URL_DU_DEPOT_GIT> web-app-configuration
+cd web-app-configuration
 
 # 1) Configurer les secrets (aucune valeur par défaut n'est fournie pour les
 #    mots de passe : le démarrage échoue explicitement sans .env rempli)
@@ -111,7 +116,7 @@ retour en arrière sur une version antérieure des images.
 ## 🌳 Arborescence du projet
 
 ```
-bos-light-mvp
+web-app-configuration
 ├─ .github/workflows/build-and-push.yml   # Publication des images vers GHCR
 ├─ ROLLBACK.md                            # Procédure de sauvegarde / retour en arrière
 ├─ scripts/backup-volumes.ps1             # Sauvegarde des volumes Postgres/ArcadeDB

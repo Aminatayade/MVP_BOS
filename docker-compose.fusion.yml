@@ -24,7 +24,7 @@
 #     fournie ici pour les mots de passe : docker compose échoue explicitement
 #     si .env est absent, plutôt que de démarrer avec un secret vide.
 #
-# USAGE (depuis la racine de bos-light-mvp) :
+# USAGE (depuis la racine de web-app-configuration) :
 #   cp .env.example .env   # puis éditer les mots de passe
 #   docker compose -f docker-compose.fusion.yml up -d --build
 
