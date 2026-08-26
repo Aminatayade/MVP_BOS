@@ -4,6 +4,7 @@ import sys
 import tempfile
 import time
 import base64
+import requests
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -564,10 +565,79 @@ RETURN e.global_id AS gid
             zone=zone,
             run_validation=False,
         )
+
+        if graph_result.status == "ingested":
+            # Best-effort : un souci Grafana (indisponible, credentials absents)
+            # ne doit jamais faire échouer l'ingestion elle-même, seulement
+            # laisser le cockpit un peu en retard sur le graphe.
+            try:
+                self._sync_grafana_location_variable()
+            except Exception as exc:
+                print(f"Warning: Grafana location sync failed: {exc}", file=sys.stderr)
+
         return {
             "validation_storage": file_payload,
             "graph_ingestion": serialize_graph_result(graph_result),
         }
+
+    def _sync_grafana_location_variable(self) -> None:
+        """Tient à jour la liste des pièces/étages affichées dans le cockpit
+        Grafana après chaque ingestion réussie, pour qu'elle reflète l'état
+        courant d'ArcadeDB plutôt qu'un instantané figé au moment de la
+        création du dashboard.
+
+        La variable Grafana native basée sur la datasource Infinity (requête
+        dynamique) ne s'exécute jamais dans cette version de Grafana --
+        aucune requête HTTP n'est jamais émise, cause non identifiée malgré
+        plusieurs configurations testées. On pousse donc la liste nous-mêmes
+        dans une variable "custom", en la régénérant à chaque ingestion --
+        plus fiable qu'une dépendance à ce mécanisme."""
+        grafana_url = os.environ.get("GRAFANA_URL")
+        grafana_password = os.environ.get("GRAFANA_ADMIN_PASSWORD")
+        if not grafana_url or not grafana_password:
+            return
+
+        arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
+        arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
+        arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
+        arcadedb_password = os.environ.get("ARCADEDB_PASSWORD", "testBIM123")
+        repo = ArcadeDbRepositoryAdapter(
+            base_url=arcadedb_base_url,
+            database=arcadedb_database,
+            username=arcadedb_username,
+            password=arcadedb_password,
+        )
+
+        locations: list[tuple[str, str]] = []
+        for label in ("Room", "Floor"):
+            resp = repo.query_cypher(f"MATCH (n:{label}) RETURN n LIMIT 1000")
+            for row in resp.get("result") or []:
+                node = row.get("n", row)
+                gid = node.get("global_id")
+                if gid:
+                    locations.append((node.get("name") or gid, gid))
+
+        if not locations:
+            return
+
+        auth = (os.environ.get("GRAFANA_ADMIN_USER", "admin"), grafana_password)
+        dash_url = f"{grafana_url}/api/dashboards/uid/bos-equipment-demo"
+        dashboard_resp = requests.get(dash_url, auth=auth, timeout=10)
+        dashboard_resp.raise_for_status()
+        dashboard = dashboard_resp.json()["dashboard"]
+
+        variable = dashboard["templating"]["list"][0]
+        variable["query"] = ",".join(f"{name} : {gid}" for name, gid in locations)
+        variable["current"] = {"text": locations[0][0], "value": locations[0][1]}
+        dashboard["id"] = None
+
+        save_resp = requests.post(
+            f"{grafana_url}/api/dashboards/db",
+            json={"dashboard": dashboard, "overwrite": True},
+            auth=auth,
+            timeout=10,
+        )
+        save_resp.raise_for_status()
 
     def _build_rules_repository(self) -> JsonRulesRepositoryAdapter:
         config_path = os.path.join(os.path.dirname(__file__), "config", "charte_bim_rules.json")

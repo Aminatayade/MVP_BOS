@@ -15,6 +15,12 @@ import NodeInspector from './components/NodeInspector'
 import { getBuildings, getModelSources, ingestBatch, type ModelSource } from './services/arcadeApi'
 import { arcadeRowsToNodeList, nodeElement, type CytoscapeElement } from './utils/graphUtils'
 
+// Grafana tourne comme service à part (pas via l'API Gateway) : le navigateur
+// le contacte directement, comme Keycloak -- même raisonnement que
+// VITE_API_GATEWAY_URL/VITE_KEYCLOAK_URL. "?kiosk" masque la nav bar/le logo
+// Grafana dans l'iframe.
+const GRAFANA_DASHBOARD_URL = `${import.meta.env.VITE_GRAFANA_URL}/d/bos-equipment-demo/bos-light-equipement-demo?kiosk&theme=dark`
+
 type ValidationResult = {
   success: boolean
   status: number
@@ -142,7 +148,7 @@ export default function BimExplorer() {
   const [batchResults, setBatchResults] = useState<BatchResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [showVisualizer, setShowVisualizer] = useState(false)
-  const [explorerTab, setExplorerTab] = useState<'graph' | 'model'>('graph')
+  const [explorerTab, setExplorerTab] = useState<'graph' | 'model' | 'supervision'>('graph')
   const [modelSources, setModelSources] = useState<ModelSource[]>([])
   const [modelSourcesLoaded, setModelSourcesLoaded] = useState(false)
   const [visualElements, setVisualElements] = useState<CytoscapeElement[]>([])
@@ -330,6 +336,14 @@ export default function BimExplorer() {
               >
                 Maquette 3D
               </button>
+              <button
+                type="button"
+                className={explorerTab === 'supervision' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm'}
+                style={explorerTab !== 'supervision' ? { color: '#cbd8e8' } : undefined}
+                onClick={() => setExplorerTab('supervision')}
+              >
+                Supervision
+              </button>
             </div>
             <button
               type="button"
@@ -362,9 +376,23 @@ export default function BimExplorer() {
               <NodeInspector node={selectedNodeInfo} onClose={() => setSelectedNodeInfo(null)} />
             </div>
           </div>
-        ) : (
+        ) : explorerTab === 'model' ? (
           <div style={{ flex: 1, padding: 16, minHeight: 0, minWidth: 0 }}>
             <BimModelViewer sources={modelSources} height="100%" />
+          </div>
+        ) : (
+          <div style={{ flex: 1, padding: 16, minHeight: 0, minWidth: 0 }}>
+            {/* Mode kiosk : masque la nav bar/le logo Grafana, le client ne voit
+                que les courbes -- pas besoin de savoir que c'est Grafana
+                derrière. Le sélecteur pièce/étage reste dans le dashboard
+                lui-même pour l'instant (pas encore synchronisé avec le noeud
+                sélectionné dans le graphe). */}
+            <iframe
+              key={GRAFANA_DASHBOARD_URL}
+              src={GRAFANA_DASHBOARD_URL}
+              title="Supervision"
+              style={{ width: '100%', height: '100%', border: 'none', borderRadius: 8, background: '#0b1120' }}
+            />
           </div>
         )}
       </div>
