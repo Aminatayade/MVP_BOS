@@ -133,6 +133,15 @@ services:
     image: ghcr.io/devoptim-bos/bos-light-frontend:${APP_VERSION:-dev}
     container_name: bos_frontend
     restart: always
+    environment:
+      # Le navigateur (pas le conteneur) contacte Keycloak/l'API Gateway
+      # directement : les URLs doivent être celles vues depuis l'hôte, pas les
+      # noms de service Docker. Sans ces variables, keycloak-js part avec des
+      # valeurs undefined et construit une URL de login invalide.
+      VITE_KEYCLOAK_URL: http://localhost:8080
+      VITE_KEYCLOAK_REALM: bos-realm
+      VITE_KEYCLOAK_CLIENT_ID: web-app-frontend
+      VITE_API_GATEWAY_URL: http://localhost:8000
     ports:
       - "5173:5173"
     depends_on:
@@ -151,6 +160,13 @@ services:
     image: ghcr.io/devoptim-bos/bos-light-frontend-client:${APP_VERSION:-dev}
     container_name: bos_frontend_client
     restart: always
+    environment:
+      # Même raisonnement que le service "frontend" ci-dessus : client Keycloak
+      # dedie (web-app-client) et port hote 5174.
+      VITE_KEYCLOAK_URL: http://localhost:8080
+      VITE_KEYCLOAK_REALM: bos-realm
+      VITE_KEYCLOAK_CLIENT_ID: web-app-client
+      VITE_API_GATEWAY_URL: http://localhost:8000
     ports:
       - "5174:5173"
     depends_on:

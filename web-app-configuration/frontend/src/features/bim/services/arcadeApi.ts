@@ -178,7 +178,7 @@ export async function ingestBatch(zone: string, files: { name: string; disciplin
     const resp = await apiClient.post(
       '/api/bim/ingest-batch',
       { zone, files },
-      { timeout: 120_000 },
+      { timeout: 600_000 },
     )
     return resp.data
   } catch (error) {

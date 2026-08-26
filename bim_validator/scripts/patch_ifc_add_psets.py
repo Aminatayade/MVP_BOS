@@ -16,16 +16,38 @@ except Exception as e:
     sys.exit(2)
 
 
+def _find_pset_entity(element, name):
+    # IsDefinedBy mélange IfcRelDefinesByProperties (a RelatingPropertyDefinition)
+    # et IfcRelDefinesByType (n'en a pas) -- getattr(..., None) pour ne planter
+    # que sur le premier type de relation.
+    for rel in getattr(element, "IsDefinedBy", None) or []:
+        pdef = getattr(rel, "RelatingPropertyDefinition", None)
+        if pdef is not None and getattr(pdef, "Name", None) == name:
+            return pdef
+    return None
+
+
 def add_space_pset(model, space):
+    # Le Pset_SpaceCommon existe déjà sur la quasi-totalité des IfcSpace de
+    # cette maquette (avec juste "Reference"), mais SANS les deux propriétés
+    # requises par la charte -- le early-return d'origine ("si le Pset existe,
+    # ne rien faire") laissait donc passer des Pset incomplets sans jamais les
+    # compléter. On vérifie maintenant les propriétés elles-mêmes, pas juste
+    # la présence du Pset.
     psets = ifcopenshell.util.element.get_psets(space) or {}
-    if "Pset_SpaceCommon" in psets:
+    existing = psets.get("Pset_SpaceCommon", {})
+    missing = {}
+    if not existing.get("IsExternal"):
+        missing["IsExternal"] = False
+    if not existing.get("OccupancyType"):
+        missing["OccupancyType"] = "other"
+    if not missing:
         return False
-    props = {
-        "IsExternal": False,
-        "OccupancyType": "other",
-    }
     try:
-        ifcopenshell.api.run("pset.add_pset", model, product=space, name="Pset_SpaceCommon", properties=props)
+        pset = _find_pset_entity(space, "Pset_SpaceCommon")
+        if pset is None:
+            pset = ifcopenshell.api.run("pset.add_pset", model, product=space, name="Pset_SpaceCommon")
+        ifcopenshell.api.run("pset.edit_pset", model, pset=pset, properties=missing)
         return True
     except Exception as e:
         print(f"Failed to add Pset_SpaceCommon to {space.GlobalId}: {e}")
@@ -34,16 +56,17 @@ def add_space_pset(model, space):
 
 def add_wall_pset(model, wall):
     psets = ifcopenshell.util.element.get_psets(wall) or {}
-    if "Pset_WallCommon" in psets:
-        # ensure FireRating exists
-        ps = psets.get("Pset_WallCommon", {})
-        if "FireRating" in ps:
-            return False
+    existing = psets.get("Pset_WallCommon", {})
+    if existing.get("FireRating"):
+        return False
     props = {
         "FireRating": "unknown",
     }
     try:
-        ifcopenshell.api.run("pset.add_pset", model, product=wall, name="Pset_WallCommon", properties=props)
+        pset = _find_pset_entity(wall, "Pset_WallCommon")
+        if pset is None:
+            pset = ifcopenshell.api.run("pset.add_pset", model, product=wall, name="Pset_WallCommon")
+        ifcopenshell.api.run("pset.edit_pset", model, pset=pset, properties=props)
         return True
     except Exception as e:
         print(f"Failed to add Pset_WallCommon to {getattr(wall,'GlobalId',None)}: {e}")

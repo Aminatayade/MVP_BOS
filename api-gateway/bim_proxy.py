@@ -42,7 +42,12 @@ TIMESERIES_API_INTERNAL_URL = os.getenv("TIMESERIES_API_INTERNAL_URL", "http://t
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 
 SHORT_TIMEOUT = httpx.Timeout(10.0)
-LONG_TIMEOUT = httpx.Timeout(120.0)
+# 120s suffisait pour des maquettes de test, mais une maquette réelle de
+# plusieurs dizaines de Mo (des dizaines de milliers d'éléments IFC validés un
+# par un) peut légitimement prendre plusieurs minutes -- observé en pratique
+# avec bim_api qui finissait par répondre "200" bien après ce délai, laissant
+# le client avec une 502/504 alors que l'ingestion avait réussi.
+LONG_TIMEOUT = httpx.Timeout(600.0)
 
 router = APIRouter(prefix="/api/bim", tags=["bim-proxy"])
 
