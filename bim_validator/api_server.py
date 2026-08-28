@@ -114,7 +114,12 @@ RETURN f AS floor, collect(distinct r) AS rooms, collect(distinct e) AS equipmen
                 self._send_json({"error": str(exc)}, 500)
             return
         if parsed.path == "/graph/floors":
-            # return a simple list of floor nodes (global_id + name)
+            # return a simple list of floor nodes (global_id + name).
+            # "zone" est optionnel (compat. avec les appelants existants qui
+            # ne le passent pas) -- sans lui, retombe sur le comportement
+            # global d'origine.
+            params = parse_qs(parsed.query)
+            zone = params.get("zone", [None])[0]
             arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
             arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
             arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
@@ -126,13 +131,23 @@ RETURN f AS floor, collect(distinct r) AS rooms, collect(distinct e) AS equipmen
                 password=arcadedb_password,
             )
             try:
-                cy = "MATCH (f:Floor) RETURN f LIMIT 500"
+                if zone:
+                    cy = f"MATCH (f:Floor {{zone: '{_cypher_escape(zone)}'}}) RETURN f LIMIT 500"
+                else:
+                    cy = "MATCH (f:Floor) RETURN f LIMIT 500"
                 resp = repo.query_cypher(cy)
                 self._send_json({"ok": True, "result": resp})
             except Exception as exc:
                 self._send_json({"error": str(exc)}, 500)
             return
         if parsed.path == "/graph/buildings":
+            # "zone" optionnel, même raisonnement que /graph/floors ci-dessus
+            # -- corrige le bug où "Visualiser graphe" affichait TOUS les
+            # bâtiments jamais ingérés (toutes zones confondues) au lieu de
+            # ceux de la zone courante, donnant l'impression qu'une ancienne
+            # maquette restait "en cache".
+            params = parse_qs(parsed.query)
+            zone = params.get("zone", [None])[0]
             arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
             arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
             arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
@@ -144,7 +159,10 @@ RETURN f AS floor, collect(distinct r) AS rooms, collect(distinct e) AS equipmen
                 password=arcadedb_password,
             )
             try:
-                cy = "MATCH (b:Building) RETURN b LIMIT 500"
+                if zone:
+                    cy = f"MATCH (b:Building {{zone: '{_cypher_escape(zone)}'}}) RETURN b LIMIT 500"
+                else:
+                    cy = "MATCH (b:Building) RETURN b LIMIT 500"
                 resp = repo.query_cypher(cy)
                 self._send_json({"ok": True, "result": resp})
             except Exception as exc:

@@ -150,7 +150,6 @@ export default function BimExplorer() {
   const [showVisualizer, setShowVisualizer] = useState(false)
   const [explorerTab, setExplorerTab] = useState<'graph' | 'model' | 'supervision'>('graph')
   const [modelSources, setModelSources] = useState<ModelSource[]>([])
-  const [modelSourcesLoaded, setModelSourcesLoaded] = useState(false)
   const [visualElements, setVisualElements] = useState<CytoscapeElement[]>([])
   const [selectedNodeInfo, setSelectedNodeInfo] = useState<any | null>(null)
   const [dragActive, setDragActive] = useState(false)
@@ -254,10 +253,9 @@ export default function BimExplorer() {
     setStatus('Chargement des bâtiments...')
     setSelectedNodeInfo(null)
     setExplorerTab('graph')
-    setModelSourcesLoaded(false)
     setModelSources([])
     try {
-      const rows = await getBuildings()
+      const rows = await getBuildings(zone.trim())
       const nodes = arcadeRowsToNodeList(rows).map((data) => nodeElement(data))
       setVisualElements(nodes)
       setShowVisualizer(true)
@@ -273,14 +271,15 @@ export default function BimExplorer() {
 
   const openModelTab = async () => {
     setExplorerTab('model')
-    if (modelSourcesLoaded) return
+    // Toujours recharger : la maquette 3D doit refléter la dernière
+    // ingestion, pas la première visite de cet onglet dans la session (bug
+    // remonté -- l'ancien garde-fou ne rechargeait plus jamais après le
+    // premier chargement).
     try {
       const found = await getModelSources(zone.trim())
       setModelSources(found)
     } catch (err) {
       setStatus(err instanceof Error ? err.message : 'Erreur')
-    } finally {
-      setModelSourcesLoaded(true)
     }
   }
 
@@ -378,7 +377,7 @@ export default function BimExplorer() {
           </div>
         ) : explorerTab === 'model' ? (
           <div style={{ flex: 1, padding: 16, minHeight: 0, minWidth: 0 }}>
-            <BimModelViewer sources={modelSources} height="100%" />
+            <BimModelViewer sources={modelSources} zone={zone.trim()} height="100%" />
           </div>
         ) : (
           <div style={{ flex: 1, padding: 16, minHeight: 0, minWidth: 0 }}>

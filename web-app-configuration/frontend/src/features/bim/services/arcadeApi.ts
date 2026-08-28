@@ -51,9 +51,9 @@ export async function getRootContexts() {
   }
 }
 
-export async function getFloors(): Promise<{ global_id: string; name?: string }[]> {
+export async function getFloors(): Promise<{ global_id: string; name?: string; zone?: string }[]> {
   const rows = await getRootContexts()
-  const floors: { global_id: string; name?: string }[] = []
+  const floors: { global_id: string; name?: string; zone?: string }[] = []
 
   for (const row of rows) {
     const candidate = (row as Record<string, unknown>).f ?? (row as Record<string, unknown>).floor ?? row
@@ -61,10 +61,36 @@ export async function getFloors(): Promise<{ global_id: string; name?: string }[
       ((candidate as Record<string, unknown>).attributes as Record<string, unknown> | undefined) ??
       (candidate as Record<string, unknown>)
     const globalId = attrs.global_id as string | undefined
-    if (globalId) floors.push({ global_id: globalId, name: attrs.name as string | undefined })
+    if (globalId) {
+      floors.push({
+        global_id: globalId,
+        name: attrs.name as string | undefined,
+        zone: attrs.zone as string | undefined,
+      })
+    }
   }
 
   return floors
+}
+
+export interface RoomOption {
+  global_id: string
+  name?: string
+}
+
+/** Pièces d'un étage donné, pour le sélecteur de téléportation en immersion 3D. */
+export async function getFloorRooms(floorId: string): Promise<RoomOption[]> {
+  const rows = await getFloorView(floorId)
+  const roomOptions: RoomOption[] = []
+  for (const row of rows) {
+    const roomRows = (row as Record<string, unknown>).rooms
+    if (!Array.isArray(roomRows)) continue
+    for (const r of roomRows) {
+      const globalId = (r as Record<string, unknown>).global_id as string | undefined
+      if (globalId) roomOptions.push({ global_id: globalId, name: (r as Record<string, unknown>).name as string | undefined })
+    }
+  }
+  return roomOptions
 }
 
 export async function getFloorView(floorId: string) {
@@ -122,9 +148,16 @@ export async function downloadModelBytes(storageUrl: string): Promise<ArrayBuffe
   }
 }
 
-export async function getBuildings() {
+/**
+ * zone optionnel : sans lui, retombe sur tous les bâtiments ingérés (toutes
+ * zones confondues) -- avec lui, scope à la zone courante. Le corriger ici
+ * évitait qu'une nouvelle ingestion ait l'air de laisser l'ancienne maquette
+ * "en cache" (elle restait juste mélangée avec la nouvelle dans une liste
+ * jamais filtrée).
+ */
+export async function getBuildings(zone?: string) {
   try {
-    const resp = await apiClient.get('/api/bim/graph/buildings')
+    const resp = await apiClient.get('/api/bim/graph/buildings', { params: zone ? { zone } : undefined })
     return unwrapArcadeResult(resp.data)
   } catch (error) {
     throw new Error(extractErrorMessage(error, 'Failed to fetch buildings'))
