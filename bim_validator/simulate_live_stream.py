@@ -1,12 +1,25 @@
 """
 Simulateur de flux LIVE : publie en continu (une vague toutes les N secondes)
-une nouvelle mesure par (Equipment, métrique) avec l'horodatage courant.
+une nouvelle mesure par (Equipment, métrique) avec l'horodatage courant, en
+respectant les métriques du catalogue de simulation par type d'équipement
+(equipment_simulation_catalog.json, même catalogue que celui utilisé
+automatiquement à l'ingestion).
 
 Contrairement à publish_demo_stream.py (un lot historique envoyé en une fois),
 ce script tourne indéfiniment — c'est la démonstration de l'injection "live"
 (jour 4) : lance-le dans un terminal, laisse tourner
 `docker logs -f bos_timeseries_api` dans un autre, et regarde les points
 arriver en temps réel.
+
+Chaque point "courant" est généré via le même générateur que l'historique,
+appelé avec history_days=0 (un seul point, exactement à `now`) -- même forme
+physique (oscillation jour/nuit, corrélation occupation...), pas un second
+modèle de génération à maintenir en parallèle. Limite connue : un compteur
+"cumulatif" (ex: compteur électrique) repart d'une valeur proche de zéro à
+chaque vague plutôt que de continuer à croître -- suivre un cumul dans la
+durée nécessiterait un état persistant entre vagues, hors scope de ce script
+de démo (l'historique généré automatiquement à l'ingestion, lui, est correct
+sur toute sa fenêtre car généré en un seul passage continu).
 
 Usage :
     python simulate_live_stream.py
@@ -26,24 +39,8 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(__file__))
 
 from adapters.nats_adapter import NatsJetStreamAdapter
-from application.demo_data_generator import METRIC_PROFILES
-from publish_demo_stream import DEFAULT_SUBJECT, fetch_real_global_ids
-
-
-def _generate_point(global_id: str, metric: str, source: str) -> dict:
-    profile = METRIC_PROFILES[metric]
-    base = float(profile["base"])
-    spread = float(profile["spread"])
-    value = round(base + random.uniform(-spread, spread), 2)
-    return {
-        "global_id": global_id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "metric": metric,
-        "value": value,
-        "unit": str(profile["unit"]),
-        "quality": "good" if random.random() > 0.02 else "uncertain",
-        "source": source,
-    }
+from application.simulation_generators import generate_metric_history
+from publish_demo_stream import DEFAULT_SUBJECT, _build_catalog, fetch_real_equipment
 
 
 def main() -> None:
@@ -61,24 +58,51 @@ def main() -> None:
     nats_password = os.environ.get("NATS_PASSWORD", "testBIM123")
     subject = os.environ.get("BOS_TIMESERIES_SUBJECT", DEFAULT_SUBJECT)
 
-    global_ids = fetch_real_global_ids(
+    equipment = fetch_real_equipment(
         base_url=base_url, database=database, username=username, password=password, limit=args.limit
     )
-    print(f"📦 {len(global_ids)} Equipment.global_id réels : {global_ids}")
+    print(f"📦 {len(equipment)} Equipment réels : {equipment}")
+
+    catalog = _build_catalog()
+    equipment_specs = []
+    for global_id, equipment_type in equipment:
+        try:
+            spec = catalog.get_generator_spec(equipment_type)
+        except KeyError:
+            continue
+        if spec.metrics:
+            equipment_specs.append((global_id, spec))
 
     adapter = NatsJetStreamAdapter(servers=nats_servers, user=nats_user, password=nats_password)
-    source = "live-simulator"
+    rng = random.Random()
 
     print(f"🔴 Flux live démarré (une vague toutes les {args.interval:g}s). Ctrl+C pour arrêter.")
     try:
         while True:
+            now = datetime.now(timezone.utc)
+            messages = [
+                message
+                for global_id, spec in equipment_specs
+                for metric in spec.metrics
+                for message in generate_metric_history(
+                    global_id=global_id, metric=metric, history_days=0, points_per_day=1,
+                    now=now, rng=rng, source="live-simulator",
+                )
+            ]
             payloads = [
-                _generate_point(global_id, metric, source)
-                for global_id in global_ids
-                for metric in METRIC_PROFILES
+                {
+                    "global_id": m.global_id,
+                    "timestamp": m.timestamp.isoformat(),
+                    "metric": m.metric,
+                    "value": m.value,
+                    "unit": m.unit,
+                    "quality": m.quality,
+                    "source": m.source,
+                }
+                for m in messages
             ]
             adapter.publish_many(subject, payloads)
-            print(f"📤 {len(payloads)} point(s) publié(s) à {datetime.now(timezone.utc).strftime('%H:%M:%S')}")
+            print(f"📤 {len(payloads)} point(s) publié(s) à {now.strftime('%H:%M:%S')}")
             time.sleep(args.interval)
     except KeyboardInterrupt:
         print("\n🛑 Arrêt du flux live.")

@@ -665,3 +665,86 @@ select.input {
   white-space: nowrap;
   max-width: 220px;
 }
+
+/* Popup flottante sur un nœud Equipment (canvas Cytoscape, fond sombre --
+   couleurs alignées sur le chrome déjà en inline dans BimGraphViewer.tsx,
+   pas les variables --gray-*/--navy-* du thème clair du reste de l'app). */
+.equipment-popup {
+  z-index: 20;
+  width: 220px;
+  background: #1f2937;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+}
+
+.equipment-popup__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #334155;
+}
+
+.equipment-popup__title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #e2e8f0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.equipment-popup__close {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 0 0 6px;
+  flex-shrink: 0;
+}
+
+.equipment-popup__close:hover {
+  color: #e2e8f0;
+}
+
+.equipment-popup__muted {
+  font-size: 11.5px;
+  color: #94a3b8;
+  margin: 0;
+}
+
+.equipment-popup__error {
+  font-size: 11.5px;
+  color: #f87171;
+  margin: 0;
+}
+
+.equipment-popup__metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.equipment-popup__metric {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.equipment-popup__metric-name {
+  color: #94a3b8;
+  text-transform: capitalize;
+}
+
+.equipment-popup__metric-value {
+  color: #e2e8f0;
+  font-weight: 600;
+}

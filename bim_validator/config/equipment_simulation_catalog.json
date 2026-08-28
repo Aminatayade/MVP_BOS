@@ -1,0 +1,672 @@
+{
+  "equipment_types": {
+    "automate_gtb": {
+      "label": "Automate / contrôleur GTB",
+      "predefined_types": {},
+      "keywords": ["automate", "controleur gtb", "gtb controller", "plc", "regulateur gtb"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "sparse_event_log",
+          "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 1.0 },
+          "value_labels": { "0": "OK", "1": "Défaut" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "passerelle_gtb": {
+      "label": "Passerelle / gateway (BACnet, Modbus, KNX, OPC-UA)",
+      "predefined_types": {},
+      "keywords": ["passerelle", "gateway", "bacnet", "modbus", "knx", "opc-ua", "opc ua"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "sparse_event_log",
+          "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.2 },
+          "value_labels": { "0": "En ligne", "1": "Hors ligne" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "regulateur_zone": {
+      "label": "Régulateur de zone",
+      "predefined_types": {},
+      "keywords": ["regulateur zone", "régulateur de zone", "zone controller"],
+      "metrics": [
+        {
+          "name": "temperature",
+          "unit": "°C",
+          "generator": "day_night_cycle",
+          "params": { "base": 20.0, "amplitude": 1.5, "noise": 0.3 }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "controleur_gtc": {
+      "label": "Contrôleur GTC (Gestion Technique Centralisée)",
+      "predefined_types": {},
+      "keywords": ["gtc", "controleur gtc", "gestion technique centralisee"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "sparse_event_log",
+          "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.5 },
+          "value_labels": { "0": "OK", "1": "Défaut" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "sonde_temperature": {
+      "label": "Sonde de température",
+      "predefined_types": { "IfcSensor": ["TEMPERATURESENSOR"] },
+      "keywords": ["temp", "sonde temp", "temperature sensor", "thermostat"],
+      "metrics": [
+        {
+          "name": "temperature",
+          "unit": "°C",
+          "generator": "day_night_cycle",
+          "params": { "base": 21.0, "amplitude": 2.0, "noise": 0.5 }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "sonde_qualite_air": {
+      "label": "Sonde qualité d'air (CO2/COV)",
+      "predefined_types": { "IfcSensor": ["CO2SENSOR", "AIRQUALITYSENSOR"] },
+      "keywords": ["co2", "qualite air", "air quality", "cov", "voc"],
+      "metrics": [
+        {
+          "name": "co2",
+          "unit": "ppm",
+          "generator": "occupancy_correlated",
+          "params": { "base": 420.0, "peak": 900.0, "occupied_hours": [9, 18] }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "detecteur_presence": {
+      "label": "Détecteur de présence / occupation",
+      "predefined_types": { "IfcSensor": ["MOVEMENTSENSOR", "OCCUPANCYSENSOR"] },
+      "keywords": ["presence", "occupation", "pir", "mouvement", "occupancy"],
+      "metrics": [
+        {
+          "name": "occupancy",
+          "unit": "count",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.0, "peak": 6.0, "occupied_hours": [9, 18] }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "detecteur_fumee": {
+      "label": "Détecteur fumée / incendie",
+      "predefined_types": { "IfcAlarm": ["FIRE"], "IfcSensor": ["SMOKESENSOR"] },
+      "keywords": ["fumee", "fumée", "smoke", "detecteur incendie"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "sparse_event_log",
+          "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.05 },
+          "value_labels": { "0": "Normal", "1": "Alarme" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "multicapteur_confort": {
+      "label": "Multicapteur confort",
+      "predefined_types": {},
+      "keywords": ["multicapteur", "capteur confort", "comfort sensor"],
+      "metrics": [
+        {
+          "name": "temperature",
+          "unit": "°C",
+          "generator": "day_night_cycle",
+          "params": { "base": 21.0, "amplitude": 1.5, "noise": 0.4 }
+        },
+        {
+          "name": "humidity",
+          "unit": "%",
+          "generator": "day_night_cycle",
+          "params": { "base": 45.0, "amplitude": 8.0, "noise": 2.0 }
+        },
+        {
+          "name": "luminosity",
+          "unit": "lux",
+          "generator": "occupancy_correlated",
+          "params": { "base": 30.0, "peak": 500.0, "occupied_hours": [7, 19] }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "compteur_electrique": {
+      "label": "Compteur électrique",
+      "predefined_types": { "IfcFlowMeter": ["ELECTRICMETER"] },
+      "keywords": ["compteur elec", "compteur électrique", "kwh", "electric meter"],
+      "metrics": [
+        {
+          "name": "energy_cumulative_kwh",
+          "unit": "kWh",
+          "generator": "cumulative_daily_profile",
+          "params": { "daily_growth": 40.0, "peak_hours": [8, 19] }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "day_night_cycle",
+          "params": { "base": 3.0, "amplitude": 4.0, "noise": 0.3 }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "compteur_thermique": {
+      "label": "Compteur thermique",
+      "predefined_types": {},
+      "keywords": ["compteur thermique", "compteur chaleur", "heat meter"],
+      "metrics": [
+        {
+          "name": "energy_cumulative_kwh",
+          "unit": "kWh",
+          "generator": "cumulative_daily_profile",
+          "params": { "daily_growth": 60.0, "peak_hours": [6, 22] }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "compteur_eau": {
+      "label": "Compteur d'eau",
+      "predefined_types": {},
+      "keywords": ["compteur eau", "compteur d'eau", "water meter"],
+      "metrics": [
+        {
+          "name": "volume_cumulative_m3",
+          "unit": "m³",
+          "generator": "cumulative_daily_profile",
+          "params": { "daily_growth": 2.5, "peak_hours": [7, 9] }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "luminaire": {
+      "label": "Luminaire",
+      "predefined_types": {},
+      "keywords": ["luminaire", "light fixture", "eclairage", "lighting"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.0, "peak": 1.0, "occupied_hours": [8, 19] },
+          "value_labels": { "0": "Éteint", "1": "Allumé" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "store_brise_soleil": {
+      "label": "Store / brise-soleil",
+      "predefined_types": {},
+      "keywords": ["store", "brise-soleil", "brise soleil", "volet"],
+      "metrics": [
+        {
+          "name": "position_percent",
+          "unit": "%",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.0, "peak": 100.0, "occupied_hours": [7, 19] }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "ventilo_convecteur": {
+      "label": "Ventilo-convecteur",
+      "predefined_types": {},
+      "keywords": ["ventilo-convecteur", "ventiloconvecteur", "fan coil", "vcv"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.0, "peak": 1.0, "occupied_hours": [7, 20] },
+          "value_labels": { "0": "Arrêt", "1": "Marche" }
+        },
+        {
+          "name": "setpoint_temperature",
+          "unit": "°C",
+          "generator": "day_night_cycle",
+          "params": { "base": 21.0, "amplitude": 1.0, "noise": 0.2 }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "borne_recharge": {
+      "label": "Borne de recharge",
+      "predefined_types": {},
+      "keywords": ["borne recharge", "charging station", "irve"],
+      "metrics": [
+        {
+          "name": "occupancy",
+          "unit": "état",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.0, "peak": 1.0, "occupied_hours": [8, 18] },
+          "value_labels": { "0": "Libre", "1": "Occupée" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "prise_commandee": {
+      "label": "Prise commandée",
+      "predefined_types": {},
+      "keywords": ["prise commandee", "prise commandée", "smart socket", "prise pilotee"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.0, "peak": 1.0, "occupied_hours": [8, 19] },
+          "value_labels": { "0": "Éteint", "1": "Allumé" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "cta": {
+      "label": "CTA (centrale de traitement d'air)",
+      "predefined_types": {},
+      "keywords": ["cta", "centrale traitement air", "air handling unit", "ahu"],
+      "metrics": [
+        {
+          "name": "temperature",
+          "unit": "°C",
+          "generator": "day_night_cycle",
+          "params": { "base": 18.0, "amplitude": 3.0, "noise": 0.5 }
+        },
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.0, "peak": 1.0, "occupied_hours": [7, 20] },
+          "value_labels": { "0": "Arrêt", "1": "Marche" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "groupe_froid": {
+      "label": "Groupe froid / groupe de production",
+      "predefined_types": {},
+      "keywords": ["groupe froid", "chiller", "groupe de production", "groupe de prod"],
+      "metrics": [
+        {
+          "name": "temperature_depart",
+          "unit": "°C",
+          "generator": "day_night_cycle",
+          "params": { "base": 7.0, "amplitude": 2.0, "noise": 0.3 }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "ventilateur": {
+      "label": "Ventilateur / extracteur",
+      "predefined_types": {},
+      "keywords": ["fan", "ventilateur", "extracteur", "centrifugal", "rooftop", "vmc"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.0, "peak": 1.0, "occupied_hours": [7, 20] },
+          "value_labels": { "0": "Arrêt", "1": "Marche" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "pompe": {
+      "label": "Pompe circulation",
+      "predefined_types": {},
+      "keywords": ["pompe", "pump", "circulateur"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.0, "peak": 1.0, "occupied_hours": [7, 20] },
+          "value_labels": { "0": "Arrêt", "1": "Marche" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "vanne_regulation": {
+      "label": "Vanne de régulation",
+      "predefined_types": {},
+      "keywords": ["vanne regulation", "vanne de régulation", "control valve"],
+      "metrics": [
+        {
+          "name": "position_percent",
+          "unit": "%",
+          "generator": "occupancy_correlated",
+          "params": { "base": 10.0, "peak": 80.0, "occupied_hours": [7, 20] }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "batterie_chauffe_froid": {
+      "label": "Batterie de chauffe / froid",
+      "predefined_types": {},
+      "keywords": ["batterie chauffe", "batterie froid", "heating coil", "cooling coil"],
+      "metrics": [
+        {
+          "name": "temperature",
+          "unit": "°C",
+          "generator": "day_night_cycle",
+          "params": { "base": 30.0, "amplitude": 5.0, "noise": 0.5 }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "tgbt": {
+      "label": "TGBT (tableau général de basse tension)",
+      "predefined_types": {},
+      "keywords": ["tgbt", "tableau general basse tension", "tableau général de basse tension"],
+      "metrics": [
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "day_night_cycle",
+          "params": { "base": 50.0, "amplitude": 30.0, "noise": 3.0 }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "tableau_divisionnaire": {
+      "label": "Tableau divisionnaire",
+      "predefined_types": {},
+      "keywords": ["tableau divisionnaire", "sub-panel"],
+      "metrics": [
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "day_night_cycle",
+          "params": { "base": 10.0, "amplitude": 8.0, "noise": 1.0 }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "armoire_communicante": {
+      "label": "Armoire communicante",
+      "predefined_types": {},
+      "keywords": ["armoire communicante"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "sparse_event_log",
+          "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.3 },
+          "value_labels": { "0": "OK", "1": "Défaut" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "disjoncteur": {
+      "label": "Disjoncteur / protection",
+      "predefined_types": {},
+      "keywords": ["disjoncteur", "protection", "circuit breaker"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "sparse_event_log",
+          "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.1 },
+          "value_labels": { "0": "Fermé", "1": "Déclenché" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "onduleur": {
+      "label": "Onduleur",
+      "predefined_types": {},
+      "keywords": ["onduleur", "ups", "inverter"],
+      "metrics": [
+        {
+          "name": "battery_charge_percent",
+          "unit": "%",
+          "generator": "day_night_cycle",
+          "params": { "base": 95.0, "amplitude": 4.0, "noise": 1.0 }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "vanne_arret": {
+      "label": "Vanne d'arrêt / robinet",
+      "predefined_types": {},
+      "keywords": ["vanne arret", "vanne d'arrêt", "robinet"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "sparse_event_log",
+          "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.02 },
+          "value_labels": { "0": "Ouvert", "1": "Fermé" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "pompe_relevage": {
+      "label": "Pompe de relevage",
+      "predefined_types": {},
+      "keywords": ["pompe relevage", "lifting pump"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "sparse_event_log",
+          "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 2.0 },
+          "value_labels": { "0": "Arrêt", "1": "Marche" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "ballon_eau_chaude": {
+      "label": "Ballon d'eau chaude",
+      "predefined_types": {},
+      "keywords": ["ballon eau chaude", "ballon ecs", "chauffe-eau", "water heater"],
+      "metrics": [
+        {
+          "name": "temperature",
+          "unit": "°C",
+          "generator": "day_night_cycle",
+          "params": { "base": 55.0, "amplitude": 5.0, "noise": 0.5 }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "detecteur_fuite": {
+      "label": "Détecteur de fuite",
+      "predefined_types": {},
+      "keywords": ["detecteur fuite", "détecteur de fuite", "leak detector"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "sparse_event_log",
+          "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.02 },
+          "value_labels": { "0": "Sec", "1": "Humide" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "centrale_incendie": {
+      "label": "Centrale incendie",
+      "predefined_types": {},
+      "keywords": ["centrale incendie", "centrale ssi", "fire panel"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "sparse_event_log",
+          "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.05 },
+          "value_labels": { "0": "Normal", "1": "Alarme" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "centrale_intrusion": {
+      "label": "Centrale intrusion",
+      "predefined_types": {},
+      "keywords": ["centrale intrusion", "intrusion panel", "alarme intrusion"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "sparse_event_log",
+          "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.05 },
+          "value_labels": { "0": "Normal", "1": "Alarme" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "controleur_acces": {
+      "label": "Contrôleur d'accès / badgeuse",
+      "predefined_types": {},
+      "keywords": ["controleur acces", "badgeuse", "access control", "lecteur badge"],
+      "metrics": [
+        {
+          "name": "badge_count",
+          "unit": "count",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.0, "peak": 8.0, "occupied_hours": [7, 19] }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "videosurveillance": {
+      "label": "Vidéosurveillance",
+      "predefined_types": {},
+      "keywords": ["camera", "caméra", "videosurveillance", "cctv"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "sparse_event_log",
+          "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.1 },
+          "value_labels": { "0": "En ligne", "1": "Hors ligne" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "switch_reseau": {
+      "label": "Switch réseau",
+      "predefined_types": {},
+      "keywords": ["switch", "commutateur reseau", "commutateur réseau"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "sparse_event_log",
+          "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.1 },
+          "value_labels": { "0": "En ligne", "1": "Hors ligne" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "routeur": {
+      "label": "Routeur",
+      "predefined_types": {},
+      "keywords": ["routeur", "router"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "sparse_event_log",
+          "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.1 },
+          "value_labels": { "0": "En ligne", "1": "Hors ligne" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "borne_wifi": {
+      "label": "Borne Wi-Fi",
+      "predefined_types": {},
+      "keywords": ["borne wifi", "borne wi-fi", "wifi ap", "access point"],
+      "metrics": [
+        {
+          "name": "connected_clients",
+          "unit": "count",
+          "generator": "occupancy_correlated",
+          "params": { "base": 2.0, "peak": 25.0, "occupied_hours": [8, 19] }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "baie_brassage": {
+      "label": "Baie de brassage",
+      "predefined_types": {},
+      "keywords": ["baie brassage", "baie de brassage", "patch panel"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "sparse_event_log",
+          "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.05 },
+          "value_labels": { "0": "OK", "1": "Défaut" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "cvc_generic": {
+      "label": "Équipement CVC (générique)",
+      "predefined_types": {},
+      "keywords": [],
+      "metrics": [
+        {
+          "name": "temperature",
+          "unit": "°C",
+          "generator": "day_night_cycle",
+          "params": { "base": 21.0, "amplitude": 1.5, "noise": 0.5 }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "electricity_generic": {
+      "label": "Équipement électrique (générique)",
+      "predefined_types": {},
+      "keywords": [],
+      "metrics": [],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "security_generic": {
+      "label": "Équipement sécurité (générique)",
+      "predefined_types": {},
+      "keywords": [],
+      "metrics": [
+        {
+          "name": "occupancy",
+          "unit": "count",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.0, "peak": 3.0, "occupied_hours": [9, 18] }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "sanitary_generic": {
+      "label": "Équipement sanitaire (générique)",
+      "predefined_types": {},
+      "keywords": [],
+      "metrics": [],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "furniture_generic": {
+      "label": "Mobilier (générique)",
+      "predefined_types": {},
+      "keywords": [],
+      "metrics": [],
+      "history": { "days": 7, "points_per_day": 24 }
+    }
+  },
+  "category_fallbacks": {
+    "cvc": "cvc_generic",
+    "electricity": "electricity_generic",
+    "security": "security_generic",
+    "sanitary": "sanitary_generic",
+    "furniture": "furniture_generic"
+  }
+}

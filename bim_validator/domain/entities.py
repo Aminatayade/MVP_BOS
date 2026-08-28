@@ -103,6 +103,30 @@ class ValidationReport:
 
 
 @dataclass(frozen=True)
+class MetricSpec:
+    """Une métrique simulée pour un type d'équipement (catalogue de
+    simulation) : quel générateur produit ses valeurs, avec quels
+    paramètres. `value_labels` documente l'encodage numérique d'un état
+    catégoriel (ex: {"0": "OK", "1": "Défaut"}) quand applicable."""
+    name: str
+    unit: str
+    generator: str
+    params: dict = field(default_factory=dict)
+    value_labels: dict[str, str] | None = None
+
+
+@dataclass(frozen=True)
+class EquipmentSimulationSpec:
+    """Spécification de simulation pour un type d'équipement du catalogue
+    (bim_validator/config/equipment_simulation_catalog.json)."""
+    equipment_type: str
+    label: str
+    metrics: list[MetricSpec]
+    history_days: int = 7
+    points_per_day: int = 24
+
+
+@dataclass(frozen=True)
 class UnifiedMessage:
     """Point de mesure normalisé reçu sur le canal live/historique (NATS),
     avant écriture dans le moteur time-series natif d'ArcadeDB. Le global_id

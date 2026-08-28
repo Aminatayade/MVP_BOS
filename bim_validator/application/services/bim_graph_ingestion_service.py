@@ -7,10 +7,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from application.bim_validator_service import BimValidatorService
+from application.equipment_simulation_service import EquipmentSimulationService
 from domain.entities import ValidationReport
 from domain.ports import (
     BimGraphRepositoryPort,
     ComplianceRulesRepositoryPort,
+    EquipmentCatalogPort,
     IfcModelReaderPort,
     SeaweedStoragePort,
 )
@@ -106,6 +108,7 @@ class EquipmentNode:
     discipline: str = ""
     storage_url: str = ""
     zone: str = ""
+    equipment_type: str = ""
 
 
 @dataclass(frozen=True)
@@ -132,6 +135,8 @@ class BimGraphIngestionService:
         graph_repository: BimGraphRepositoryPort,
         ifc_reader: IfcModelReaderPort,
         rules_repository: ComplianceRulesRepositoryPort,
+        equipment_catalog: EquipmentCatalogPort,
+        equipment_simulation_service: EquipmentSimulationService | None = None,
         arcade_batch_size: int = 500,
     ) -> None:
         self._seaweed_storage = seaweed_storage
@@ -139,6 +144,10 @@ class BimGraphIngestionService:
         self._graph_repository = graph_repository
         self._ifc_reader = ifc_reader
         self._rules_repository = rules_repository
+        self._equipment_catalog = equipment_catalog
+        # Optionnel : certains appelants (tests, outils CLI) n'ont pas besoin
+        # de simulation -- ingestion graphe et simulation restent découplées.
+        self._equipment_simulation_service = equipment_simulation_service
         self._arcade_batch_size = arcade_batch_size
 
     def ingest_from_storage(
@@ -190,6 +199,7 @@ class BimGraphIngestionService:
                 edge_count,
                 equipment_count,
                 unmatched_equipment_count,
+                equipment_nodes,
             ) = self._build_graph_commands(
                 raw_model,
                 build_spatial_backbone=build_backbone,
@@ -214,6 +224,14 @@ class BimGraphIngestionService:
             except Exception:
                 # Don't fail the whole ingestion if cleanup fails; log by printing.
                 print("Warning: post-ingestion deduplication failed", file=sys.stderr)
+
+            # Simulation de télémétrie : best-effort, en tâche de fond -- ne
+            # doit jamais retarder ni faire échouer la réponse d'ingestion.
+            # Les nœuds Equipment existent déjà en base à ce stade (batch
+            # ci-dessus déjà exécuté), donc aucune dépendance d'ordre avec
+            # le backfill timeseries (deux magasins indépendants).
+            if self._equipment_simulation_service is not None and equipment_nodes:
+                self._equipment_simulation_service.backfill_for_equipment_async(equipment_nodes)
 
             return BimGraphIngestionResult(
                 status="ingested",
@@ -251,7 +269,7 @@ class BimGraphIngestionService:
         discipline: str = "",
         zone: str = "",
         storage_url: str = "",
-    ) -> tuple[list[str], int, int, int, int]:
+    ) -> tuple[list[str], int, int, int, int, list[EquipmentNode]]:
         all_nodes_commands: list[str] = []
         edge_commands: list[str] = []
 
@@ -323,7 +341,7 @@ class BimGraphIngestionService:
         matched_equipment_ids = {equipment_id for equipment_id, _location_id in equipment_edges}
         unmatched_equipment_count = equipment_count - len(matched_equipment_ids)
 
-        return commands, node_count, edge_count, equipment_count, unmatched_equipment_count
+        return commands, node_count, edge_count, equipment_count, unmatched_equipment_count, equipment_nodes
 
     def _extract_equipment_nodes_and_edges(
         self,
@@ -355,6 +373,14 @@ class BimGraphIngestionService:
                         name=name,
                         object_type=object_type,
                     )
+                    equipment_type = self._equipment_catalog.classify(
+                        ifc_type=ifc_type,
+                        predefined_type=_predefined_type(element),
+                        category=category,
+                        name=name,
+                        raw_name=raw_name,
+                        object_type=object_type,
+                    )
 
                     equipment_nodes_by_id[equipment_id] = EquipmentNode(
                         global_id=equipment_id,
@@ -366,6 +392,7 @@ class BimGraphIngestionService:
                         discipline=discipline,
                         storage_url=storage_url,
                         zone=zone,
+                        equipment_type=equipment_type,
                     )
 
                     location_id = self._resolve_equipment_location(
@@ -616,6 +643,16 @@ def _raw_name(ifc_entity) -> str:
     return _clean_name(getattr(ifc_entity, "Name", None))
 
 
+def _predefined_type(ifc_entity) -> str:
+    """PredefinedType IFC (ex: 'TEMPERATURESENSOR' sur un IfcSensor) --
+    signal structuré pour le catalogue de simulation par type d'équipement,
+    plus fiable qu'un mot-clé dans le nom mais souvent absent des exports
+    réels. Retourne toujours une chaîne (jamais None) : le catalogue traite
+    lui-même les valeurs vides/NOTDEFINED/USERDEFINED comme "pas de signal"."""
+    value = getattr(ifc_entity, "PredefinedType", None)
+    return str(value) if value else ""
+
+
 def _to_spatial_node(ifc_entity, label: str, *, discipline: str = "", storage_url: str = "", zone: str = "") -> SpatialNode:
     global_id = getattr(ifc_entity, "GlobalId", None)
     if not global_id:
@@ -802,6 +839,7 @@ def _merge_equipment_node_query(node: EquipmentNode) -> str:
             "raw_name": node.raw_name,
             "ifc_type": node.ifc_type,
             "category": node.category,
+            "equipment_type": node.equipment_type,
             "is_read_only": node.is_read_only,
             "discipline": node.discipline,
             "zone": node.zone,

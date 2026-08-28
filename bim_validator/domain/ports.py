@@ -9,7 +9,13 @@ web-ifc demain) peut les implémenter.
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from datetime import datetime
-from .entities import BimElement, SpatialStructureSummary, ModelUnits, UnifiedMessage
+from .entities import (
+    BimElement,
+    EquipmentSimulationSpec,
+    ModelUnits,
+    SpatialStructureSummary,
+    UnifiedMessage,
+)
 
 
 class IfcModelReaderPort(ABC):
@@ -197,4 +203,73 @@ class TimeseriesRepositoryPort(ABC):
     ) -> list[dict]:
         """Lecture pour affichage (ex: courbes frontend). Filtre optionnel par
         métrique et fenêtre temporelle, triée par ts croissant."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def query_latest(
+        self,
+        global_id: str,
+        *,
+        metric: str | None = None,
+        limit: int = 1,
+    ) -> list[dict]:
+        """Dernière(s) valeur(s) enregistrée(s), triée(s) par ts DÉCROISSANT
+        -- contrairement à query_readings (ts croissant, pensé pour tracer
+        une courbe). Sémantique différente ("valeur courante" vs "fenêtre
+        d'historique") et appelants différents : volontairement une méthode
+        séparée plutôt qu'un paramètre d'ordre sur query_readings, pour ne
+        jamais changer le comportement des appelants existants de celle-ci."""
+        raise NotImplementedError
+
+
+class EquipmentCatalogPort(ABC):
+    """Contrat pour classifier un équipement IFC en un type précis du
+    catalogue de simulation (bim_validator/config/equipment_simulation_catalog.json)
+    et récupérer sa spécification de génération. L'implémentation doit
+    appliquer une cascade (PredefinedType IFC -> mots-clés sur le nom ->
+    repli sur la catégorie large EQUIPMENT_CATEGORIES) et NE JAMAIS lever
+    d'exception pour un équipement non reconnu -- seulement retourner un
+    type générique de repli, pour qu'aucune ingestion ne bloque sur une
+    classification ratée."""
+
+    @abstractmethod
+    def classify(
+        self,
+        *,
+        ifc_type: str,
+        predefined_type: str | None,
+        category: str,
+        name: str,
+        raw_name: str,
+        object_type: str,
+    ) -> str:
+        """Retourne la clé equipment_type résolue (jamais vide)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_generator_spec(self, equipment_type: str) -> EquipmentSimulationSpec:
+        """Lève KeyError seulement si equipment_type est absent du
+        catalogue -- ne devrait arriver que si `classify` a un bug, puisque
+        classify garantit par ailleurs un repli toujours présent."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def all_metric_names(self) -> list[str]:
+        """Liste dédupliquée de tous les noms de métrique définis dans le
+        catalogue, tous types d'équipement confondus -- utilisée pour peupler
+        des listes d'UI (ex: variable de dashboard Grafana) sans dépendre des
+        données réellement présentes à un instant donné."""
+        raise NotImplementedError
+
+
+class GrafanaDashboardSyncPort(ABC):
+    """Contrat pour resynchroniser les variables d'un dashboard Grafana
+    (liste de pièces/étages, liste de métriques) avec l'état courant du
+    système. Doit être best-effort : une erreur (Grafana injoignable,
+    dashboard renommé...) ne doit jamais faire échouer l'ingestion qui
+    déclenche l'appel -- c'est à l'appelant de catcher/logguer, pas à
+    l'implémentation de garantir un succès."""
+
+    @abstractmethod
+    def sync_variables(self) -> None:
         raise NotImplementedError

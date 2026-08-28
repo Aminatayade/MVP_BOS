@@ -178,6 +178,38 @@ class ArcadeDbTimeseriesAdapter(TimeseriesRepositoryPort):
         # chaque ligne TIMESERIES : bruit à retirer avant de renvoyer au métier.
         return [{k: v for k, v in row.items() if not k.startswith("@")} for row in rows]
 
+    def query_latest(
+        self,
+        global_id: str,
+        *,
+        metric: str | None = None,
+        limit: int = 1,
+    ) -> list[dict]:
+        # Volontairement une méthode séparée de query_readings (ts ASC, pensé
+        # pour tracer une courbe) : "valeur courante" veut le tri INVERSE
+        # (ts DESC), sinon LIMIT renvoie les N points les plus ANCIENS de
+        # tout l'historique au lieu des plus récents.
+        conditions = [f"global_id = '{_sql_escape(global_id)}'"]
+        if metric:
+            conditions.append(f"metric = '{_sql_escape(metric)}'")
+
+        command = (
+            "SELECT ts, metric, value, unit, quality, source FROM "
+            f"{TIMESERIES_TYPE_NAME} WHERE {' AND '.join(conditions)} "
+            f"ORDER BY ts DESC LIMIT {int(limit)}"
+        )
+        payload = {"language": "sql", "command": command}
+        response = self._session.post(self._command_endpoint, json=payload, timeout=self._timeout_seconds)
+        try:
+            response.raise_for_status()
+        except Exception as exc:
+            raise RuntimeError(
+                f"ArcadeDB query_latest failed (status={response.status_code}): {response.text}"
+            ) from exc
+
+        rows = response.json().get("result", [])
+        return [{k: v for k, v in row.items() if not k.startswith("@")} for row in rows]
+
 
 def _sql_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
