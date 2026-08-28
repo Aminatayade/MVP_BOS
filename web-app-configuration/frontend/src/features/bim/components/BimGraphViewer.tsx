@@ -1,9 +1,10 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import cytoscape, { type Core, type ElementDefinition } from 'cytoscape'
 import dagre from 'cytoscape-dagre'
 import { getNodeChildren, getRoomEquipment } from '../services/arcadeApi'
 import type { CytoscapeElement } from '../utils/graphUtils'
 import { edgeElement, equipmentGroupPlaceholder, nodeElement, parseArcadeNode } from '../utils/graphUtils'
+import EquipmentTelemetryPopup from './EquipmentTelemetryPopup'
 
 cytoscape.use(dagre)
 
@@ -56,6 +57,9 @@ export default function BimGraphViewer({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const cyRef = useRef<Core | null>(null)
   const expandedRef = useRef<Set<string>>(new Set())
+  const [equipmentPopup, setEquipmentPopup] = useState<
+    { nodeId: string; x: number; y: number; label: string } | null
+  >(null)
 
   // onNodeSelect est typiquement une arrow function inline côté parent (nouvelle
   // référence à CHAQUE rendu). Si ces callbacks étaient dans les dépendances de
@@ -185,6 +189,23 @@ export default function BimGraphViewer({
         const data = node.data() as Record<string, unknown>
         onNodeSelectRef.current?.(data)
 
+        // Popup flottante ancrée au nœud, uniquement pour un vrai Equipment
+        // (pas un nœud groupé "N équipements", dont le type 'EquipmentGroup'
+        // contiendrait aussi la sous-chaîne "equipment").
+        const isRealEquipment =
+          data.placeholder !== true && String(data.type ?? '').toLowerCase().includes('equipment')
+        if (isRealEquipment) {
+          const renderedPosition = node.renderedPosition()
+          setEquipmentPopup({
+            nodeId: node.id(),
+            x: renderedPosition.x,
+            y: renderedPosition.y,
+            label: String(data.label ?? data.name ?? node.id()),
+          })
+        } else {
+          setEquipmentPopup(null)
+        }
+
         if (data.placeholder === true) {
           // Nœud groupé "N équipements" : on ne va chercher la vraie liste
           // qu'ici, au clic, pour ne jamais charger d'un coup les dizaines
@@ -266,7 +287,21 @@ export default function BimGraphViewer({
       cy.on('tap', (event) => {
         if (event.target === cy) {
           cy.$('node:selected').unselect()
+          setEquipmentPopup(null)
         }
+      })
+
+      // Le nœud (ou la vue) peut bouger pendant que la popup est ouverte
+      // (pan, zoom, glisser-déposer du nœud) : on la recale à chaque frame
+      // pertinente plutôt que de la laisser dériver du nœud qu'elle décrit.
+      cy.on('pan zoom position drag', () => {
+        setEquipmentPopup((prev) => {
+          if (!prev) return prev
+          const target = cy.getElementById(prev.nodeId)
+          if (target.empty()) return null
+          const renderedPosition = target.renderedPosition()
+          return { ...prev, x: renderedPosition.x, y: renderedPosition.y }
+        })
       })
 
       cyRef.current = cy
@@ -310,6 +345,9 @@ export default function BimGraphViewer({
     cy.elements().remove()
     cy.add(toElementDefinitions(elements))
     expandedRef.current.clear()
+    // Le nœud décrit par une popup ouverte vient d'être retiré du canvas :
+    // la garder affichée pointerait sur un élément qui n'existe plus.
+    setEquipmentPopup(null)
     runLayout(cy)
   }, [elements])
 
@@ -377,6 +415,16 @@ export default function BimGraphViewer({
           </button>
         ))}
       </div>
+      {equipmentPopup && (
+        <EquipmentTelemetryPopup
+          key={equipmentPopup.nodeId}
+          globalId={equipmentPopup.nodeId}
+          label={equipmentPopup.label}
+          x={equipmentPopup.x}
+          y={equipmentPopup.y}
+          onClose={() => setEquipmentPopup(null)}
+        />
+      )}
     </div>
   )
 }

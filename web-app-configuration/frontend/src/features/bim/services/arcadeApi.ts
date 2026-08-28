@@ -169,6 +169,34 @@ export async function getEquipmentReadings(
   }
 }
 
+export interface EquipmentMetricSummary {
+  metric: string
+  unit: string
+  value_labels: Record<string, string> | null
+  current: { value: number; timestamp: string; quality?: string } | null
+  history: { value: number; timestamp: string }[]
+}
+
+/**
+ * Valeur courante + historique récent d'un équipement, groupés par métrique
+ * -- consommé par la popup flottante du graphe (EquipmentTelemetryPopup).
+ * `metrics: []` est une réponse valide (équipement sans télémétrie simulée
+ * pour son type, ex: mobilier), pas une erreur.
+ */
+export async function getEquipmentSummary(
+  globalId: string,
+  historyLimit = 50,
+): Promise<EquipmentMetricSummary[]> {
+  try {
+    const resp = await apiClient.get('/api/bim/timeseries/equipment-summary', {
+      params: { global_id: globalId, history_limit: historyLimit },
+    })
+    return (resp.data.metrics ?? []) as EquipmentMetricSummary[]
+  } catch (error) {
+    throw new Error(extractErrorMessage(error, 'Failed to fetch equipment summary'))
+  }
+}
+
 /**
  * Upload + validation + ingestion d'un lot de maquettes IFC.
  * Remplace le fetch('http://127.0.0.1:8000/ingest-batch', ...) d'origine.

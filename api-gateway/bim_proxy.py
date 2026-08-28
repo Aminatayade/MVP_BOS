@@ -228,3 +228,8 @@ async def ingest_batch(request: Request):
 @router.get("/timeseries/readings", dependencies=[Depends(verify_allowed_roles)])
 async def timeseries_readings(request: Request):
     return await _forward_get(TIMESERIES_API_INTERNAL_URL, "/timeseries/readings", request, SHORT_TIMEOUT)
+
+
+@router.get("/timeseries/equipment-summary", dependencies=[Depends(verify_allowed_roles)])
+async def timeseries_equipment_summary(request: Request):
+    return await _forward_get(TIMESERIES_API_INTERNAL_URL, "/timeseries/equipment-summary", request, SHORT_TIMEOUT)

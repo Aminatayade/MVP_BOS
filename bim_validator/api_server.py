@@ -15,20 +15,35 @@ try:
 except Exception:
     IfcOpenShellAdapter = None
 from adapters.json_rules_adapter import JsonRulesRepositoryAdapter
+from adapters.json_equipment_catalog_adapter import JsonEquipmentCatalogAdapter
 from adapters.seaweedfs_adapter import SeaweedFsStorageAdapter
+from adapters.arcadedb_ts_adapter import ArcadeDbTimeseriesAdapter
+from adapters.grafana_dashboard_sync_adapter import GrafanaDashboardSyncAdapter
 from application.services.bim_graph_ingestion_service import BimGraphIngestionResult, BimGraphIngestionService
 from application.bim_validator_service import BimValidatorService
 from application.bim_ingestion_service import BimIngestionService
+from application.equipment_simulation_service import EquipmentSimulationService
 from domain.entities import ValidationReport
 from infrastructure.adapters.arcadedb_repository_adapter import ArcadeDbRepositoryAdapter
 from infrastructure.adapters.seaweed_storage_adapter import SeaweedStorageAdapter
 from datetime import datetime
 
+# Singleton process : le pool de threads du backfill de simulation doit être
+# PARTAGÉ entre tous les fichiers d'un même batch d'ingestion (chacun
+# reconstruit son propre BimGraphIngestionService), pas recréé par fichier --
+# sinon un batch de N fichiers ouvrirait N pools indépendants et le
+# plafonnement de concurrence (max_workers) perdrait tout son sens.
+_equipment_simulation_service_singleton: EquipmentSimulationService | None = None
 
-def _bucket_and_average(rows: list[dict], *, bucket_seconds: int) -> list[dict]:
-    """Regroupe des lectures brutes multi-équipements par fenêtre temporelle et
-    moyenne leur valeur -- transforme N séries (une par équipement) en UNE
-    seule série exploitable par un panel Grafana au niveau Room/Floor."""
+
+def _bucket_and_aggregate(rows: list[dict], *, bucket_seconds: int, aggregation: str = "avg") -> list[dict]:
+    """Regroupe des lectures brutes multi-équipements/multi-pièces par fenêtre
+    temporelle et les réduit à UNE seule série exploitable par un panel
+    Grafana. `aggregation="sum"` pour un compteur cumulatif (énergie, eau :
+    la grandeur qui a du sens au niveau site/étage est le TOTAL, pas la
+    moyenne des compteurs individuels) ; `aggregation="avg"` pour une
+    grandeur physique comme la température (la moyenne, pas la somme, est
+    la grandeur représentative)."""
     buckets: dict[int, list[float]] = {}
     for row in rows:
         ts_raw = row.get("ts")
@@ -45,12 +60,20 @@ def _bucket_and_average(rows: list[dict], *, bucket_seconds: int) -> list[dict]:
     readings = []
     for epoch in sorted(buckets):
         values = buckets[epoch]
+        aggregated = sum(values) if aggregation == "sum" else sum(values) / len(values)
         readings.append({
             "ts": datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M:%S.000"),
-            "value": round(sum(values) / len(values), 2),
+            "value": round(aggregated, 2),
             "sample_count": len(values),
         })
     return readings
+
+
+# Métriques du catalogue dont le nom porte "cumulative" (compteurs kWh/m³) :
+# leur agrégation multi-équipements/multi-pièces doit être une SOMME (le
+# total consommé), pas une moyenne. Toute autre métrique reste moyennée.
+def _aggregation_for_metric(metric: str) -> str:
+    return "sum" if "cumulative" in metric else "avg"
 
 
 def _cypher_escape(value: str) -> str:
@@ -346,18 +369,25 @@ RETURN DISTINCT n.discipline AS discipline, n.storage_url AS storage_url
                 self._send_json({"error": str(exc)}, 500)
             return
         if parsed.path == "/graph/location-readings":
-            # Moyenne agrégée d'une métrique pour TOUS les équipements
-            # rattachés (directement) à un Room ou Floor donné -- le niveau
+            # Agrégation d'une métrique pour TOUS les équipements rattachés
+            # (directement) à UN OU PLUSIEURS Room/Floor donnés -- le niveau
             # métier le plus pertinent pour un cockpit client (le schéma
             # spatial Building->Floor->Room est fiable, contrairement au
             # rattachement par équipement individuel qui dépend de la qualité
-            # de nommage de chaque maquette).
+            # de nommage de chaque maquette). `global_id` accepte une liste
+            # séparée par des virgules pour comparer/cumuler plusieurs
+            # pièces/étages en une seule requête (ex: "les deux premiers
+            # étages" -- voir variable Grafana "location", multi-sélection).
             params = parse_qs(parsed.query)
-            gid = params.get("global_id", [None])[0]
+            gid_param = params.get("global_id", [None])[0]
             metric = params.get("metric", [None])[0]
             bucket_seconds = int(params.get("bucket_seconds", ["10"])[0])
             raw_limit = int(params.get("raw_limit", ["5000"])[0])
-            if not gid or not metric:
+            if not gid_param or not metric:
+                self._send_json({"error": "global_id and metric query params are required"}, 400)
+                return
+            location_ids = sorted({g.strip() for g in gid_param.split(",") if g.strip()})
+            if not location_ids:
                 self._send_json({"error": "global_id and metric query params are required"}, 400)
                 return
 
@@ -372,10 +402,12 @@ RETURN DISTINCT n.discipline AS discipline, n.storage_url AS storage_url
                 password=arcadedb_password,
             )
             try:
-                escaped_gid = gid.replace("'", "\\'")
+                escaped_location_ids = [lid.replace("'", "\\'") for lid in location_ids]
+                location_list = ", ".join(f"'{lid}'" for lid in escaped_location_ids)
                 neighbors_cy = f"""
-MATCH (e:Equipment)-[:LOCATED_IN]->(n {{global_id: '{escaped_gid}'}})
-RETURN e.global_id AS gid
+MATCH (e:Equipment)-[:LOCATED_IN]->(n)
+WHERE n.global_id IN [{location_list}]
+RETURN DISTINCT e.global_id AS gid
 """
                 resp = repo.query_cypher(neighbors_cy)
                 rows = resp.get("result") or []
@@ -394,9 +426,12 @@ RETURN e.global_id AS gid
                 )
                 ts_resp = repo.query_sql(sql)
                 ts_rows = ts_resp.get("result") or []
-                readings = _bucket_and_average(ts_rows, bucket_seconds=bucket_seconds)
+                readings = _bucket_and_aggregate(
+                    ts_rows, bucket_seconds=bucket_seconds, aggregation=_aggregation_for_metric(metric)
+                )
                 self._send_json({
                     "ok": True,
+                    "location_count": len(location_ids),
                     "equipment_count": len(equipment_ids),
                     "raw_points": len(ts_rows),
                     "readings": readings,
@@ -571,77 +606,84 @@ RETURN e.global_id AS gid
             # ne doit jamais faire échouer l'ingestion elle-même, seulement
             # laisser le cockpit un peu en retard sur le graphe.
             try:
-                self._sync_grafana_location_variable()
+                dashboard_sync = self._build_dashboard_sync()
+                if dashboard_sync is not None:
+                    dashboard_sync.sync_variables()
             except Exception as exc:
-                print(f"Warning: Grafana location sync failed: {exc}", file=sys.stderr)
+                print(f"Warning: Grafana dashboard sync failed: {exc}", file=sys.stderr)
 
         return {
             "validation_storage": file_payload,
             "graph_ingestion": serialize_graph_result(graph_result),
         }
 
-    def _sync_grafana_location_variable(self) -> None:
-        """Tient à jour la liste des pièces/étages affichées dans le cockpit
-        Grafana après chaque ingestion réussie, pour qu'elle reflète l'état
-        courant d'ArcadeDB plutôt qu'un instantané figé au moment de la
-        création du dashboard.
+    def _build_dashboard_sync(self) -> GrafanaDashboardSyncAdapter | None:
+        """Resynchronise après chaque ingestion réussie les variables
+        "Pièce/Étage" ET "Type de donnée" du cockpit Grafana, pour qu'elles
+        reflètent l'état courant d'ArcadeDB/du catalogue plutôt qu'un
+        instantané figé au moment de la création du dashboard.
 
         La variable Grafana native basée sur la datasource Infinity (requête
         dynamique) ne s'exécute jamais dans cette version de Grafana --
         aucune requête HTTP n'est jamais émise, cause non identifiée malgré
-        plusieurs configurations testées. On pousse donc la liste nous-mêmes
-        dans une variable "custom", en la régénérant à chaque ingestion --
-        plus fiable qu'une dépendance à ce mécanisme."""
+        plusieurs configurations testées. On pousse donc les listes
+        nous-mêmes dans des variables "custom", régénérées à chaque
+        ingestion -- plus fiable qu'une dépendance à ce mécanisme.
+        Voir aussi scripts/sync_grafana_dashboard_variables.py (même
+        logique, en script autonome pour une resynchronisation manuelle)."""
         grafana_url = os.environ.get("GRAFANA_URL")
         grafana_password = os.environ.get("GRAFANA_ADMIN_PASSWORD")
         if not grafana_url or not grafana_password:
-            return
+            return None
 
         arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
         arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
         arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
         arcadedb_password = os.environ.get("ARCADEDB_PASSWORD", "testBIM123")
-        repo = ArcadeDbRepositoryAdapter(
+        graph_repo = ArcadeDbRepositoryAdapter(
             base_url=arcadedb_base_url,
             database=arcadedb_database,
             username=arcadedb_username,
             password=arcadedb_password,
         )
 
-        locations: list[tuple[str, str]] = []
-        for label in ("Room", "Floor"):
-            resp = repo.query_cypher(f"MATCH (n:{label}) RETURN n LIMIT 1000")
-            for row in resp.get("result") or []:
-                node = row.get("n", row)
-                gid = node.get("global_id")
-                if gid:
-                    locations.append((node.get("name") or gid, gid))
-
-        if not locations:
-            return
-
-        auth = (os.environ.get("GRAFANA_ADMIN_USER", "admin"), grafana_password)
-        dash_url = f"{grafana_url}/api/dashboards/uid/bos-equipment-demo"
-        dashboard_resp = requests.get(dash_url, auth=auth, timeout=10)
-        dashboard_resp.raise_for_status()
-        dashboard = dashboard_resp.json()["dashboard"]
-
-        variable = dashboard["templating"]["list"][0]
-        variable["query"] = ",".join(f"{name} : {gid}" for name, gid in locations)
-        variable["current"] = {"text": locations[0][0], "value": locations[0][1]}
-        dashboard["id"] = None
-
-        save_resp = requests.post(
-            f"{grafana_url}/api/dashboards/db",
-            json={"dashboard": dashboard, "overwrite": True},
-            auth=auth,
-            timeout=10,
+        return GrafanaDashboardSyncAdapter(
+            grafana_url=grafana_url,
+            grafana_user=os.environ.get("GRAFANA_ADMIN_USER", "admin"),
+            grafana_password=grafana_password,
+            dashboard_uid=os.environ.get("GRAFANA_DASHBOARD_UID", "bos-equipment-demo"),
+            graph_repository=graph_repo,
+            equipment_catalog=self._build_equipment_catalog(),
         )
-        save_resp.raise_for_status()
 
     def _build_rules_repository(self) -> JsonRulesRepositoryAdapter:
         config_path = os.path.join(os.path.dirname(__file__), "config", "charte_bim_rules.json")
         return JsonRulesRepositoryAdapter(config_path)
+
+    def _build_equipment_catalog(self) -> JsonEquipmentCatalogAdapter:
+        config_path = os.path.join(os.path.dirname(__file__), "config", "equipment_simulation_catalog.json")
+        return JsonEquipmentCatalogAdapter(config_path)
+
+    def _build_equipment_simulation_service(self) -> EquipmentSimulationService:
+        global _equipment_simulation_service_singleton
+        if _equipment_simulation_service_singleton is None:
+            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
+            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
+            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
+            arcadedb_password = os.environ.get("ARCADEDB_PASSWORD", "testBIM123")
+            timeseries_repo = ArcadeDbTimeseriesAdapter(
+                base_url=arcadedb_base_url,
+                database=arcadedb_database,
+                username=arcadedb_username,
+                password=arcadedb_password,
+            )
+            max_workers = int(os.environ.get("SIMULATION_BACKFILL_WORKERS", "2"))
+            _equipment_simulation_service_singleton = EquipmentSimulationService(
+                catalog=self._build_equipment_catalog(),
+                timeseries_repository=timeseries_repo,
+                max_workers=max_workers,
+            )
+        return _equipment_simulation_service_singleton
 
     def _build_graph_ingestion_service(self) -> BimGraphIngestionService:
         arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
@@ -670,6 +712,8 @@ RETURN e.global_id AS gid
             graph_repository=graph_repo,
             ifc_reader=IfcOpenShellAdapter(),
             rules_repository=self._build_rules_repository(),
+            equipment_catalog=self._build_equipment_catalog(),
+            equipment_simulation_service=self._build_equipment_simulation_service(),
             arcade_batch_size=500,
         )
 

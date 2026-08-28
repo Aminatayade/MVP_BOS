@@ -1,9 +1,12 @@
 """
 Script utilitaire : publie un lot de mesures de démo sur NATS JetStream.
 
-Récupère les VRAIS Equipment.global_id depuis ArcadeDB (requête SQL directe,
-pas besoin de passer par un port pour ce script utilitaire), génère des
-UnifiedMessage plausibles, puis les publie sur NATS.
+Récupère des VRAIS (Equipment.global_id, equipment_type) depuis ArcadeDB
+(requête SQL directe, pas besoin de passer par un port pour ce script
+utilitaire), génère l'historique selon le catalogue de simulation par type
+d'équipement (equipment_simulation_catalog.json -- même catalogue que celui
+utilisé automatiquement à l'ingestion, voir EquipmentSimulationService), puis
+publie les points sur NATS.
 
 Ce script ne touche JAMAIS ArcadeDB pour l'écriture des points : l'écriture
 passe TOUJOURS par consume_timeseries.py. C'est le point qui justifie la
@@ -16,33 +19,55 @@ Usage :
 from __future__ import annotations
 
 import os
+import random
 import sys
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 import requests
 
+from adapters.json_equipment_catalog_adapter import JsonEquipmentCatalogAdapter
 from adapters.nats_adapter import NatsJetStreamAdapter
-from application.demo_data_generator import generate_demo_messages
+from application.simulation_generators import generate_metric_history
 
 DEFAULT_SUBJECT = "bos.timeseries.demo"
 
 
-def fetch_real_global_ids(
+def _build_catalog() -> JsonEquipmentCatalogAdapter:
+    config_path = os.path.join(os.path.dirname(__file__), "config", "equipment_simulation_catalog.json")
+    return JsonEquipmentCatalogAdapter(config_path)
+
+
+def fetch_real_equipment(
     *, base_url: str, database: str, username: str, password: str, limit: int = 5
-) -> list[str]:
+) -> list[tuple[str, str]]:
+    """Retourne des (global_id, equipment_type) réels depuis ArcadeDB.
+    `equipment_type` est renseigné par le classifieur à l'ingestion (voir
+    BimGraphIngestionService) -- absent seulement pour un Equipment ingéré
+    avant l'ajout de cette fonctionnalité."""
     endpoint = f"{base_url.rstrip('/')}/api/v1/command/{database}"
-    payload = {"language": "sql", "command": f"SELECT global_id FROM Equipment LIMIT {int(limit)}"}
+    payload = {
+        "language": "sql",
+        "command": (
+            "SELECT global_id, equipment_type FROM Equipment "
+            f"WHERE equipment_type IS NOT NULL LIMIT {int(limit)}"
+        ),
+    }
     response = requests.post(endpoint, json=payload, auth=(username, password), timeout=30)
     response.raise_for_status()
     rows = response.json().get("result", [])
-    global_ids = [row["global_id"] for row in rows if row.get("global_id")]
-    if not global_ids:
+    equipment = [
+        (row["global_id"], row["equipment_type"])
+        for row in rows
+        if row.get("global_id") and row.get("equipment_type")
+    ]
+    if not equipment:
         raise RuntimeError(
-            "Aucun Equipment.global_id trouvé dans ArcadeDB. Ingérez d'abord une maquette IFC "
-            "(voir main.py) avant de lancer ce script de démo."
+            "Aucun Equipment avec equipment_type trouvé dans ArcadeDB. Ingérez d'abord une "
+            "maquette IFC (le classifieur renseigne ce champ automatiquement à l'ingestion)."
         )
-    return global_ids
+    return equipment
 
 
 def main() -> None:
@@ -55,13 +80,34 @@ def main() -> None:
     nats_password = os.environ.get("NATS_PASSWORD", "testBIM123")
     subject = os.environ.get("BOS_TIMESERIES_SUBJECT", DEFAULT_SUBJECT)
 
-    global_ids = fetch_real_global_ids(
+    equipment = fetch_real_equipment(
         base_url=base_url, database=database, username=username, password=password
     )
-    print(f"📦 {len(global_ids)} Equipment.global_id réels récupérés depuis ArcadeDB : {global_ids}")
+    print(f"📦 {len(equipment)} Equipment réels récupérés depuis ArcadeDB : {equipment}")
 
-    messages = generate_demo_messages(global_ids)
-    print(f"🧪 {len(messages)} messages de démo générés (température/co2/occupancy).")
+    catalog = _build_catalog()
+    rng = random.Random()
+    now = datetime.now(timezone.utc)
+
+    messages = []
+    for global_id, equipment_type in equipment:
+        try:
+            spec = catalog.get_generator_spec(equipment_type)
+        except KeyError:
+            continue
+        for metric in spec.metrics:
+            messages.extend(
+                generate_metric_history(
+                    global_id=global_id,
+                    metric=metric,
+                    history_days=spec.history_days,
+                    points_per_day=spec.points_per_day,
+                    now=now,
+                    rng=rng,
+                    source="demo-generator",
+                )
+            )
+    print(f"🧪 {len(messages)} messages de démo générés (catalogue par type d'équipement).")
 
     payloads = [
         {
