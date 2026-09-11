@@ -193,7 +193,7 @@
     "luminaire": {
       "label": "Luminaire",
       "predefined_types": {},
-      "keywords": ["luminaire", "light fixture", "eclairage", "lighting"],
+      "keywords": ["luminaire", "light fixture", "eclairage", "lighting", "light", "pendant light", "sconce"],
       "metrics": [
         {
           "name": "state",
@@ -258,7 +258,7 @@
     "prise_commandee": {
       "label": "Prise commandée",
       "predefined_types": {},
-      "keywords": ["prise commandee", "prise commandée", "smart socket", "prise pilotee"],
+      "keywords": ["prise commandee", "prise commandée", "smart socket", "prise pilotee", "receptacle", "outlet", "duplex receptacle"],
       "metrics": [
         {
           "name": "state",
@@ -600,7 +600,7 @@
     "baie_brassage": {
       "label": "Baie de brassage",
       "predefined_types": {},
-      "keywords": ["baie brassage", "baie de brassage", "patch panel"],
+      "keywords": ["baie brassage", "baie de brassage", "patch panel", "telephone terminal", "terminal board"],
       "metrics": [
         {
           "name": "state",
@@ -608,6 +608,75 @@
           "generator": "sparse_event_log",
           "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.05 },
           "value_labels": { "0": "OK", "1": "Défaut" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "refrigerateur": {
+      "label": "Réfrigérateur",
+      "predefined_types": {},
+      "keywords": ["refrigerator", "réfrigérateur", "refrigerateur", "frigo"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "sparse_event_log",
+          "params": { "default_value": 1.0, "event_value": 0.0, "events_per_week": 0.1 },
+          "value_labels": { "0": "Arrêt", "1": "Marche" }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "day_night_cycle",
+          "params": { "base": 0.15, "amplitude": 0.1, "noise": 0.02 }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "cuisiniere": {
+      "label": "Cuisinière / four",
+      "predefined_types": {},
+      "keywords": ["range", "cuisiniere", "cuisinière", "oven", "four cuisson"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.0, "peak": 1.0, "occupied_hours": [11, 20] },
+          "value_labels": { "0": "Arrêt", "1": "Marche" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "four_micro_ondes": {
+      "label": "Four micro-ondes",
+      "predefined_types": {},
+      "keywords": ["microwave", "micro-ondes", "micro ondes"],
+      "metrics": [
+        {
+          "name": "state",
+          "unit": "état",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.0, "peak": 1.0, "occupied_hours": [7, 20] },
+          "value_labels": { "0": "Arrêt", "1": "Marche" }
+        }
+      ],
+      "history": { "days": 7, "points_per_day": 24 }
+    },
+    "raccord_hydraulique": {
+      "label": "Raccord / canalisation (réseau hydraulique passif)",
+      "predefined_types": {},
+      "keywords": [
+        "hyd_rca", "gci-rca", "san_can", "san_pie", "optipress", "optifitt",
+        "coude", "piquage", "reduction", "réduction", "clapet anti-retour",
+        "tuyau", "canalisation"
+      ],
+      "metrics": [
+        {
+          "name": "debit_instant_m3h",
+          "unit": "m³/h",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.05, "peak": 1.5, "occupied_hours": [7, 20] }
         }
       ],
       "history": { "days": 7, "points_per_day": 24 }
@@ -667,6 +736,7 @@
     "electricity": "electricity_generic",
     "security": "security_generic",
     "sanitary": "sanitary_generic",
-    "furniture": "furniture_generic"
+    "furniture": "furniture_generic",
+    "controls": "automate_gtb"
   }
 }

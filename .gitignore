@@ -4,6 +4,12 @@
 .env
 *.env
 !.env.example
+# Fichiers de secrets Docker (docker-compose.fusion.yml, section `secrets:`)
+# -- un fichier en clair par mot de passe, monté en lecture seule dans les
+# conteneurs. Jamais committé, seul le .example ci-dessous doit l'être.
+secrets/
+!secrets/*.example
+!secrets/README.md
 
 # ==========================================
 # 2. Python & API Gateway
@@ -39,3 +45,4 @@ Thumbs.db
 # 5. Sauvegardes locales (scripts/backup-volumes.ps1)
 # ==========================================
 backups/
+bim_validator/maquettes/

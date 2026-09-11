@@ -22,18 +22,38 @@ IGNORED_DISCIPLINES = {
     "GENIE_CIVIL",
     "GENIECIVIL",
     "CIVIL",
-    "STRUCTURE",
     "PERCEMENTS",
     "ARMATURES",
 }
+# STRUCTURE retiré de cette liste : la charte (charte_bim_rules.json) lui
+# reconnaît maintenant defines_spatial_backbone=true (projets 100% génie
+# civil/industriel sans fichier ARCHI séparé -- ex: maquette de cuves avec
+# uniquement un lot Structure) -- la ignorer ici court-circuitait
+# silencieusement ce choix : la validation passait mais aucun nœud
+# Building/Floor n'était jamais créé (status "skipped" malgré un backbone
+# valide et demandé).
 
 ROOM_TYPLOGY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "meeting_room": ("meeting", "reunion", "conference", "salle projet"),
     "office": ("bureau", "office", "workspace"),
-    "sanitary": ("wc", "toilet", "sanitaire", "lavabo", "douche"),
-    "technical": ("local technique", "gtb", "it", "serveur", "tgbt"),
-    "circulation": ("couloir", "circulation", "hall", "lobby", "degagement"),
-    "storage": ("reserve", "stock", "archive", "magasin"),
+    "sanitary": ("wc", "toilet", "sanitaire", "lavabo", "douche", "bathroom", "salle de bain", "salle d'eau"),
+    # "it" seul retiré : matche en sous-chaîne n'importe quel mot qui le
+    # contient (k-IT-chen, util-IT-y...), faux positifs découverts en
+    # testant l'ajout des catégories résidentielles ci-dessous.
+    "technical": ("local technique", "salle informatique", "gtb", "serveur", "tgbt"),
+    "circulation": ("couloir", "circulation", "hall", "lobby", "degagement", "foyer", "stair", "escalier"),
+    "storage": ("reserve", "stock", "archive", "magasin", "utility", "buanderie", "cellier"),
+    # Catégories résidentielles -- absentes jusqu'ici, la liste ne couvrait
+    # que du tertiaire (bureau/réunion/sanitaire/technique/circulation/
+    # stockage). Sans elles, un bâtiment résidentiel où OccupancyType vaut
+    # explicitement "Residential" (valeur de gabarit Revit, la même pour
+    # TOUTES les pièces, pas une déclaration pièce par pièce) ne produisait
+    # qu'un seul groupe indifférencié par étage -- voir aussi
+    # GENERIC_OCCUPANCY_VALUES ci-dessous, qui doit laisser ces mots-clés
+    # s'exprimer au lieu d'être court-circuités par cette valeur générique.
+    "bedroom": ("chambre", "bedroom"),
+    "kitchen": ("cuisine", "kitchen"),
+    "living_room": ("salon", "living room", "sejour", "séjour"),
 }
 
 EQUIPMENT_CATEGORIES: dict[str, set[str]] = {
@@ -71,6 +91,16 @@ EQUIPMENT_CATEGORIES: dict[str, set[str]] = {
         "IfcFurniture",
         "IfcSystemFurnitureElement",
     },
+    # Thermostats, automates/contrôleurs GTB, régulateurs de zone... beaucoup
+    # d'exports Revit ne les mappent vers AUCUNE sous-classe IFC plus précise
+    # (IfcSensor/IfcController/IfcActuator), seulement vers le type parent
+    # générique IfcDistributionControlElement -- sans cette catégorie, ces
+    # équipements n'étaient jamais extraits comme nœud Equipment du tout,
+    # quelle que soit la qualité de leur nommage (constaté sur un vrai
+    # Thermostat Revit, GlobalId 1l2cgO2D5FS9t6u8i4CvkY).
+    "controls": {
+        "IfcDistributionControlElement",
+    },
 }
 
 FIRE_SECURITY_TOKENS = (
@@ -82,6 +112,29 @@ FIRE_SECURITY_TOKENS = (
     "extinct",
     "alarme",
     "detector",
+)
+
+# EQUIPMENT_CATEGORIES classe par TYPE IFC brut -- mais IfcFlowTerminal,
+# IfcFlowSegment et IfcFlowFitting sont des types PARENTS génériques,
+# partagés par Revit entre plusieurs domaines de distribution (CVC,
+# plomberie/sanitaire, électrique) : un évier, un lavabo ou un chemin de
+# câbles peuvent tous être exportés sous ces mêmes types génériques, sans
+# sous-type IFC plus précis. Sans repli par mot-clé, ils atterrissaient tous
+# dans "cvc" (seule catégorie où ces types génériques sont listés), les
+# rendant invisibles pour tout filtrage "Sanitaire"/"Électricité" ailleurs
+# dans l'app (widgets cockpit, etc.) -- pas seulement un souci de simulation.
+# Repli sur le préfixe de famille Revit du projet (le plus fiable, quasi
+# zéro faux positif) + quelques mots-clés génériques FR en filet de sécurité.
+SANITARY_FIXTURE_TOKENS = ("san_aps", "evier", "évier", "lavabo", "siphon", "urinoir", "baignoire")
+CABLE_TRAY_TOKENS = ("elg_cdc", "chemin de cables", "chemin de câbles", "goulotte")
+# Équipements électriques exportés sous des types IFC génériques
+# (IfcFlowTerminal...) au lieu de leur type spécifique (IfcLightFixture,
+# IfcOutlet...) tombent sinon dans "cvc" par défaut -- constaté sur un vrai
+# export Revit (luminaires "M_Troffer Light..." et prises "M_Duplex
+# Receptacle..." tous typés IfcFlowTerminal).
+ELECTRICAL_FIXTURE_TOKENS = (
+    "light", "troffer", "luminaire", "downlight", "sconce", "lampadaire",
+    "receptacle", "exit sign",
 )
 
 
@@ -154,19 +207,26 @@ class BimGraphIngestionService:
         self,
         *,
         object_key: str,
-        discipline: str,
+        disciplines: list[str],
         zone: str,
         bucket: str | None = None,
         run_validation: bool = False,
     ) -> BimGraphIngestionResult:
-        normalized_discipline = self._rules_repository.canonical_discipline(discipline)
-        if normalized_discipline in IGNORED_DISCIPLINES:
+        canonical_list = self._rules_repository.canonical_disciplines(disciplines)
+        # Skip uniquement si TOUTES les disciplines assignées sont ignorées --
+        # un fichier CVC+STRUCTURE ne doit pas être sauté juste parce qu'une
+        # de ses disciplines (hypothétique) serait dans la liste ignorée.
+        if canonical_list and all(d in IGNORED_DISCIPLINES for d in canonical_list):
             return BimGraphIngestionResult(
                 status="skipped",
-                message=f"Discipline ignored for graph ingestion: {discipline}",
+                message=f"Discipline(s) ignored for graph ingestion: {disciplines}",
                 source_key=object_key,
                 validation=None,
             )
+        # Étiquette combinée triée (ex: "CVC+ELEC+PLOMBERIE") -- stockée
+        # comme provenance sur les nœuds/équipements, jamais utilisée pour
+        # filtrer les lectures (c'est `category` qui joue ce rôle partout).
+        discipline_label = "+".join(canonical_list)
 
         local_ifc_path = self._seaweed_storage.download_ifc(object_key, bucket=bucket)
         try:
@@ -177,7 +237,7 @@ class BimGraphIngestionService:
                         "run_validation=True requires a BimValidatorService instance."
                     )
 
-                validation = self._validator.validate(local_ifc_path, discipline)
+                validation = self._validator.validate(local_ifc_path, disciplines)
                 if not validation.success:
                     return BimGraphIngestionResult(
                         status="validation_failed",
@@ -189,10 +249,12 @@ class BimGraphIngestionService:
             self._ifc_reader.load(local_ifc_path)
             raw_model = self._get_raw_model()
 
-            # is_spatial_backbone_discipline lève KeyError si la discipline n'est
-            # pas configurée dans la charte : échec explicite plutôt que le
-            # repli silencieux "non-backbone" qui masquait les fautes de frappe.
-            build_backbone = self._rules_repository.is_spatial_backbone_discipline(normalized_discipline)
+            # is_spatial_backbone_discipline lève KeyError si une discipline
+            # n'est pas configurée dans la charte : échec explicite plutôt
+            # que le repli silencieux "non-backbone" qui masquait les fautes
+            # de frappe. Vrai si AU MOINS UNE discipline assignée est
+            # backbone-defining (ex: CVC+STRUCTURE).
+            build_backbone = self._rules_repository.is_spatial_backbone_disciplines(canonical_list)
             (
                 graph_commands,
                 node_count,
@@ -203,14 +265,14 @@ class BimGraphIngestionService:
             ) = self._build_graph_commands(
                 raw_model,
                 build_spatial_backbone=build_backbone,
-                discipline=normalized_discipline,
+                discipline=discipline_label,
                 zone=zone,
                 storage_url=object_key,
             )
             if unmatched_equipment_count:
                 print(
                     f"⚠️  {unmatched_equipment_count}/{equipment_count} équipement(s) non rattaché(s) "
-                    f"à un Room/Floor (discipline={normalized_discipline}, zone='{zone}').",
+                    f"à un Room/Floor (discipline={discipline_label}, zone='{zone}').",
                     file=sys.stderr,
                 )
             self._graph_repository.execute_cypher_batch(
@@ -275,6 +337,7 @@ class BimGraphIngestionService:
 
         room_to_floor = {}
         room_nodes: list[SpatialNode] = []
+        floor_nodes: list[SpatialNode] = []
 
         if build_spatial_backbone:
             raw_rooms = list(model.by_type("IfcSpace"))
@@ -285,11 +348,42 @@ class BimGraphIngestionService:
             floor_nodes = [_to_spatial_node(floor, "Floor", discipline=discipline, storage_url=storage_url, zone=zone) for floor in model.by_type("IfcBuildingStorey")]
             room_nodes = [_to_spatial_node(room, "Room", discipline=discipline, storage_url=storage_url, zone=zone) for room in raw_rooms]
 
-            for node in (*site_nodes, *building_nodes, *floor_nodes, *room_nodes):
+            # Un GlobalId IFC n'est jamais partagé entre deux fichiers exportés
+            # séparément (même s'ils décrivent le MÊME bâtiment réel) : sans
+            # ceci, chaque fichier backbone importé dans une même zone créait
+            # SON PROPRE Site/Building, donnant plusieurs bâtiments à la
+            # racine du graphe pour un seul site réel (remonté par
+            # l'utilisateur). Le PREMIER fichier backbone d'une zone établit
+            # le Site/Building canonique ; les suivants y rattachent leurs
+            # étages au lieu d'en créer un nouveau. Les Floor/Room restent
+            # PROPRES à chaque fichier (le rattachement cross-maquette par
+            # nom, déjà en place, gère leurs équipements) -- seuls les DEUX
+            # niveaux racine sont fusionnés.
+            canonical_site_id, canonical_building_id = self._fetch_canonical_backbone_ids(zone)
+            own_site_ids = {n.global_id for n in site_nodes}
+            own_building_ids = {n.global_id for n in building_nodes}
+
+            def _canonicalize(global_id: str) -> str:
+                if canonical_site_id and global_id in own_site_ids:
+                    return canonical_site_id
+                if canonical_building_id and global_id in own_building_ids:
+                    return canonical_building_id
+                return global_id
+
+            nodes_to_create = list(floor_nodes) + list(room_nodes)
+            if not canonical_site_id:
+                nodes_to_create = site_nodes + nodes_to_create
+            if not canonical_building_id:
+                nodes_to_create = building_nodes + nodes_to_create
+
+            for node in nodes_to_create:
                 all_nodes_commands.append(_merge_spatial_node_query(node))
 
             parent_child_edges = _extract_has_child_edges(model)
-            edge_commands.extend(_merge_edge_query("HAS_CHILD", src, dst) for src, dst in parent_child_edges)
+            edge_commands.extend(
+                _merge_edge_query("HAS_CHILD", _canonicalize(src), _canonicalize(dst), zone=zone)
+                for src, dst in parent_child_edges
+            )
 
             room_to_floor = _map_room_to_floor(model)
 
@@ -310,26 +404,63 @@ class BimGraphIngestionService:
                 typology_edges.add((floor_id, typology_global_id))
                 membership_edges.add((typology_global_id, room.global_id))
 
+            # Nettoyage AVANT recréation : le global_id d'une Typology encode
+            # son nom (typology::<floor>::<nom>), donc changer la règle de
+            # classification (ex: ajout des catégories résidentielles) fait
+            # apparaître de NOUVEAUX global_id sans jamais supprimer les
+            # ANCIENS -- une réingestion laissait alors un groupe "RESIDENTIAL"
+            # orphelin à côté des nouveaux groupes fins (bug remonté par
+            # l'utilisateur, visible dans le graphe). DETACH DELETE retire
+            # aussi les relations HAS_GROUP/HAS_MEMBER du nœud obsolète.
+            floors_with_typologies: dict[str, set[str]] = {}
+            for floor_id, typology_id in typology_edges:
+                floors_with_typologies.setdefault(floor_id, set()).add(typology_id)
+            for floor_id, current_typology_ids in floors_with_typologies.items():
+                all_nodes_commands.append(_delete_stale_typologies_query(floor_id, current_typology_ids, zone=zone))
+
             for typology_global_id, typology_name in typology_nodes_by_id.items():
                 all_nodes_commands.append(_merge_typology_node_query(typology_global_id, typology_name, zone=zone))
 
             edge_commands.extend(
-                _merge_edge_query("HAS_GROUP", floor_id, typology_id)
+                _merge_edge_query("HAS_GROUP", floor_id, typology_id, zone=zone)
                 for floor_id, typology_id in sorted(typology_edges)
             )
             edge_commands.extend(
-                _merge_edge_query("HAS_MEMBER", typology_id, room_id)
+                _merge_edge_query("HAS_MEMBER", typology_id, room_id, zone=zone)
                 for typology_id, room_id in sorted(membership_edges)
             )
 
+        # Tous les étages RÉELLEMENT CRÉÉS COMME NŒUDS dans CETTE ingestion
+        # (donc uniquement quand build_spatial_backbone est vrai), au-delà de
+        # room_to_floor seul : un étage sans AUCUNE IfcSpace (bâtiment
+        # industriel/génie civil sans pièces, ex: maquette de cuves)
+        # n'apparaît jamais dans room_to_floor.values() -- sans ce
+        # complément, _resolve_equipment_location ne reconnaissait jamais un
+        # équipement pourtant directement ContainedInStructure sur CET
+        # étage (rattachement même-fichier toujours manqué, alors que le
+        # Floor existe bel et bien comme nœud du graphe).
+        #
+        # IMPORTANT : ne JAMAIS dériver ceci d'un by_type() inconditionnel
+        # sur le modèle courant. Une discipline qui ne construit PAS
+        # elle-même le backbone spatial dans cette zone (ex: CVC) ne crée
+        # AUCUN nœud Floor ici -- matcher quand même sur les GlobalId de ses
+        # propres IfcBuildingStorey ferait rattacher son équipement au
+        # premier nœud portant ce GlobalId trouvé N'IMPORTE OÙ dans la base
+        # (un GlobalId IFC n'est garanti unique qu'au sein d'un même
+        # fichier/projet, pas globalement) : un doublon fortuit avec un
+        # étage réel d'une AUTRE zone créerait une arête LOCATED_IN
+        # traversant les zones vers les données live d'un autre projet.
+        all_floor_ids = {fn.global_id for fn in floor_nodes} if build_spatial_backbone else set()
+
         # Always extract equipment; equipment location resolution can work without building backbone
         equipment_nodes, equipment_edges = self._extract_equipment_nodes_and_edges(
-            model, room_to_floor, discipline=discipline, storage_url=storage_url, zone=zone
+            model, room_to_floor, discipline=discipline, storage_url=storage_url, zone=zone,
+            extra_floor_ids=all_floor_ids,
         )
         for equipment in equipment_nodes:
             all_nodes_commands.append(_merge_equipment_node_query(equipment))
         edge_commands.extend(
-            _merge_edge_query("LOCATED_IN", equipment_id, location_id)
+            _merge_edge_query("LOCATED_IN", equipment_id, location_id, zone=zone)
             for equipment_id, location_id in sorted(equipment_edges)
         )
 
@@ -351,12 +482,19 @@ class BimGraphIngestionService:
         discipline: str = "",
         storage_url: str = "",
         zone: str = "",
+        extra_floor_ids: set[str] | None = None,
     ) -> tuple[list[EquipmentNode], set[tuple[str, str]]]:
         equipment_nodes_by_id: dict[str, EquipmentNode] = {}
         located_in_edges: set[tuple[str, str]] = set()
 
         room_ids = set(room_to_floor)
-        floor_ids = set(room_to_floor.values())
+        floor_ids = set(room_to_floor.values()) | (extra_floor_ids or set())
+        # Récupéré UNE SEULE FOIS pour toute la maquette (au lieu d'une
+        # requête ArcadeDB par équipement, voir _fetch_canonical_location_by_name_map) --
+        # un fichier de plusieurs milliers d'équipements déclenchait autant
+        # d'allers-retours réseau séquentiels, dominant largement le temps
+        # d'ingestion des gros fichiers.
+        canonical_by_name = self._fetch_canonical_location_by_name_map(zone)
 
         for category, ifc_types in EQUIPMENT_CATEGORIES.items():
             for ifc_type in ifc_types:
@@ -368,6 +506,12 @@ class BimGraphIngestionService:
                     name = _cascade_display_name(element, fallback=ifc_type or "Equipment")
                     raw_name = _raw_name(element)
                     object_type = getattr(element, "ObjectType", "") or ""
+                    resolved_category = _resolve_category_override(
+                        default_category=category,
+                        name=name,
+                        raw_name=raw_name,
+                        object_type=object_type,
+                    )
                     is_read_only = _is_fire_or_ssi_equipment(
                         ifc_type=ifc_type,
                         name=name,
@@ -376,7 +520,7 @@ class BimGraphIngestionService:
                     equipment_type = self._equipment_catalog.classify(
                         ifc_type=ifc_type,
                         predefined_type=_predefined_type(element),
-                        category=category,
+                        category=resolved_category,
                         name=name,
                         raw_name=raw_name,
                         object_type=object_type,
@@ -387,7 +531,7 @@ class BimGraphIngestionService:
                         ifc_type=ifc_type,
                         name=name,
                         raw_name=raw_name,
-                        category=category,
+                        category=resolved_category,
                         is_read_only=is_read_only,
                         discipline=discipline,
                         storage_url=storage_url,
@@ -396,7 +540,7 @@ class BimGraphIngestionService:
                     )
 
                     location_id = self._resolve_equipment_location(
-                        element, room_ids=room_ids, floor_ids=floor_ids, zone=zone,
+                        element, room_ids=room_ids, floor_ids=floor_ids, canonical_by_name=canonical_by_name,
                     )
                     if location_id:
                         located_in_edges.add((equipment_id, location_id))
@@ -409,7 +553,7 @@ class BimGraphIngestionService:
         *,
         room_ids: set[str],
         floor_ids: set[str],
-        zone: str,
+        canonical_by_name: dict[str, str],
     ) -> str | None:
         """Rattache un équipement à son Room/Floor canonique.
 
@@ -420,7 +564,10 @@ class BimGraphIngestionService:
            pour une discipline équipement (CVC, ELEC...) ingérée séparément —
            le GlobalId local ne peut structurellement correspondre à rien de
            connu dans CE fichier, donc on cherche par nom un Room/Floor déjà
-           créé par l'ingestion backbone de la MÊME zone.
+           créé par l'ingestion backbone de la MÊME zone, via `canonical_by_name`
+           (une seule requête groupée pour toute la maquette, voir
+           _fetch_canonical_location_by_name_map -- plus une requête réseau
+           par équipement).
 
         Le matching utilise raw_name (le code brut, ex: "101"), PAS name (le
         nom affiché après cascade, ex: "Bureau") — une maquette équipement
@@ -437,38 +584,57 @@ class BimGraphIngestionService:
 
             local_raw_name = _raw_name(spatial)
             if local_raw_name:
-                canonical_id = self._lookup_canonical_location_by_name(zone=zone, raw_name=local_raw_name)
+                canonical_id = canonical_by_name.get(local_raw_name)
                 if canonical_id:
                     return canonical_id
         return None
 
-    def _lookup_canonical_location_by_name(self, *, zone: str, raw_name: str) -> str | None:
-        """Cherche un Room, puis à défaut un Floor, déjà ingéré dans ArcadeDB
-        pour cette zone avec ce raw_name exact. C'est le mécanisme qui remplace
-        la correspondance par GlobalId quand équipement et backbone viennent de
-        deux maquettes distinctes."""
-        if not zone or not raw_name:
-            return None
-
+    def _fetch_canonical_backbone_ids(self, zone: str) -> tuple[str | None, str | None]:
+        """Site/Building canonique DÉJÀ existant pour cette zone, s'il y en a
+        un -- établi par le premier fichier backbone ingéré. `None` si la
+        zone n'a encore aucun Site/Building (ce fichier-ci les établira)."""
+        if not zone:
+            return None, None
         escaped_zone = _cypher_escape(zone)
-        escaped_raw_name = _cypher_escape(raw_name)
-        for vertex_type in ("Room", "Floor"):
-            sql = (
-                f"SELECT global_id FROM {vertex_type} "
-                f"WHERE zone = '{escaped_zone}' AND raw_name = '{escaped_raw_name}' LIMIT 1"
-            )
+        canonical: dict[str, str | None] = {"Site": None, "Building": None}
+        for vertex_type in ("Site", "Building"):
+            sql = f"SELECT global_id FROM {vertex_type} WHERE zone = '{escaped_zone}' LIMIT 1"
             try:
                 response = self._graph_repository.query_sql(sql)
             except Exception as exc:
-                print(f"Warning: zone-scoped location lookup failed on {vertex_type}: {exc}", file=sys.stderr)
+                print(f"Warning: canonical backbone lookup failed on {vertex_type}: {exc}", file=sys.stderr)
                 continue
-
             rows = response.get("result") if isinstance(response, dict) else None
             if rows:
-                global_id = rows[0].get("global_id")
-                if global_id:
-                    return global_id
-        return None
+                canonical[vertex_type] = rows[0].get("global_id")
+        return canonical["Site"], canonical["Building"]
+
+    def _fetch_canonical_location_by_name_map(self, zone: str) -> dict[str, str]:
+        """Une seule paire de requêtes groupées (Floor puis Room) pour toute
+        la zone, au lieu d'une requête ArcadeDB par équipement : un fichier de
+        plusieurs milliers d'équipements déclenchait autant d'allers-retours
+        réseau séquentiels, dominant largement le temps d'ingestion des gros
+        fichiers. Room peuplé EN SECOND pour écraser Floor en cas de raw_name
+        partagé entre les deux -- même précédence "Room avant Floor" que
+        l'ancienne recherche séquentielle."""
+        if not zone:
+            return {}
+        escaped_zone = _cypher_escape(zone)
+        by_name: dict[str, str] = {}
+        for vertex_type in ("Floor", "Room"):
+            sql = f"SELECT global_id, raw_name FROM {vertex_type} WHERE zone = '{escaped_zone}'"
+            try:
+                response = self._graph_repository.query_sql(sql)
+            except Exception as exc:
+                print(f"Warning: bulk location-name lookup failed on {vertex_type}: {exc}", file=sys.stderr)
+                continue
+            rows = response.get("result") if isinstance(response, dict) else None
+            for row in rows or []:
+                raw_name = row.get("raw_name")
+                global_id = row.get("global_id")
+                if raw_name and global_id:
+                    by_name[raw_name] = global_id
+        return by_name
 
     def _run_post_ingest_deduplication(self) -> None:
         """Detecte les global_id dupliqués dans ArcadeDB, fusionne conservativement
@@ -497,10 +663,18 @@ class BimGraphIngestionService:
         return [r["name"] for r in (rows or []) if r.get("name")]
 
     def _dedup_vertex_type(self, vertex_type: str, edge_types: list[str]) -> None:
-        # 1) trouver les global_id dupliqués DANS CE TYPE (sous-requête : pas de HAVING)
+        # 1) trouver les couples (global_id, zone) dupliqués DANS CE TYPE
+        # (sous-requête : pas de HAVING). Un GlobalId IFC n'est unique qu'au
+        # sein d'un même fichier/projet -- depuis que le MERGE d'ingestion
+        # scope l'identité d'un nœud par (global_id, zone) et non plus
+        # global_id seul, deux zones distinctes qui partagent par coïncidence
+        # le même GlobalId sont des nœuds LÉGITIMEMENT séparés, pas des
+        # doublons. Grouper par global_id seul ici les fusionnerait à tort
+        # (reattache d'arêtes + suppression d'un des deux nœuds), recréant la
+        # même contamination cross-zone que le MERGE scopé cherche à éviter.
         sql_find = (
-            f"SELECT * FROM (SELECT global_id, count(*) AS c FROM {vertex_type} "
-            f"GROUP BY global_id) WHERE c > 1"
+            f"SELECT * FROM (SELECT global_id, zone, count(*) AS c FROM {vertex_type} "
+            f"GROUP BY global_id, zone) WHERE c > 1"
         )
         try:
             resp = self._graph_repository.query_sql(sql_find)
@@ -512,22 +686,25 @@ class BimGraphIngestionService:
         if not rows:
             return
 
-        duplicated_gids = [r.get("global_id") for r in rows if r.get("global_id")]
-        if not duplicated_gids:
+        duplicated_keys = [
+            (r.get("global_id"), r.get("zone", "")) for r in rows if r.get("global_id")
+        ]
+        if not duplicated_keys:
             return
 
-        for gid in duplicated_gids:
-            # fetch vertices with this global_id
+        for gid, zone in duplicated_keys:
+            # fetch vertices with this (global_id, zone)
             # ArcadeDB rejette "SELECT @rid AS rid, *" (mélange alias + étoile) ;
             # "SELECT *" expose déjà @rid nativement dans chaque ligne.
             sql_list = (
                 f"SELECT * FROM {vertex_type} "
-                f"WHERE global_id = '{_cypher_escape(gid)}' ORDER BY @rid"
+                f"WHERE global_id = '{_cypher_escape(gid)}' AND zone = '{_cypher_escape(zone or '')}' "
+                f"ORDER BY @rid"
             )
             try:
                 listing = self._graph_repository.query_sql(sql_list).get("result", [])
             except Exception as exc:
-                print(f"Dedup: failed listing for {gid} ({vertex_type}): {exc}", file=sys.stderr)
+                print(f"Dedup: failed listing for {gid}/{zone} ({vertex_type}): {exc}", file=sys.stderr)
                 continue
 
             if len(listing) < 2:
@@ -727,7 +904,24 @@ def _map_room_to_floor(model) -> dict[str, str]:
     return room_to_floor
 
 
-GENERIC_OCCUPANCY_VALUES = {"other", "notdefined", "not defined", "unset", "unknown", "n/a", "na", ""}
+GENERIC_OCCUPANCY_VALUES = {
+    "other",
+    "notdefined",
+    "not defined",
+    "unset",
+    "unknown",
+    "n/a",
+    "na",
+    "",
+    # Valeurs IFC/Revit réelles mais trop larges pour servir de typologie de
+    # PIÈCE : "Residential"/"Office" décrivent l'usage du BÂTIMENT (souvent
+    # une valeur de gabarit identique sur TOUTES les pièces du projet, pas
+    # une déclaration pièce par pièce), et écrasaient sinon toute
+    # différenciation par nom de pièce (chambre/cuisine/salon...) -- voir
+    # ROOM_TYPLOGY_KEYWORDS, qui doit pouvoir s'exprimer à la place.
+    "residential",
+    "office",
+}
 
 
 def _get_occupancy_type(raw_room) -> str:
@@ -781,32 +975,57 @@ def _is_fire_or_ssi_equipment(*, ifc_type: str, name: str, object_type: str) -> 
     return any(token in combined for token in FIRE_SECURITY_TOKENS)
 
 
+def _resolve_category_override(*, default_category: str, name: str, raw_name: str, object_type: str) -> str:
+    """Corrige la catégorie d'un équipement exporté sous un type IFC parent
+    générique (IfcFlowTerminal/IfcFlowSegment/IfcFlowFitting...) mais
+    identifiable comme sanitaire ou électrique par son nom -- voir
+    SANITARY_FIXTURE_TOKENS/CABLE_TRAY_TOKENS/ELECTRICAL_FIXTURE_TOKENS. Ne
+    change rien si aucun mot-clé ne correspond (la catégorie déduite du type
+    IFC reste seule autorité dans ce cas)."""
+    combined = f"{name} {raw_name} {object_type}".lower()
+    if any(token in combined for token in SANITARY_FIXTURE_TOKENS):
+        return "sanitary"
+    if any(token in combined for token in CABLE_TRAY_TOKENS):
+        return "electricity"
+    if any(token in combined for token in ELECTRICAL_FIXTURE_TOKENS):
+        return "electricity"
+    return default_category
+
+
 def _merge_spatial_node_query(node: SpatialNode) -> str:
     """MERGE avec ON CREATE SET / ON MATCH SET via map de propriétés.
 
     En Cypher, MERGE ne pose QUE les propriétés présentes dans le pattern de
-    correspondance (ici global_id). Toute propriété supplémentaire doit être
-    ajoutée explicitement avec SET sur une map, sinon elle est silencieusement
-    perdue à la création.
+    correspondance (ici global_id + zone). Toute propriété supplémentaire doit
+    être ajoutée explicitement avec SET sur une map, sinon elle est
+    silencieusement perdue à la création.
     """
     return _upsert_node_query(
         node.label,
         node.global_id,
+        node.zone,
         {
             "name": node.name,
             "raw_name": node.raw_name,
             "discipline": node.discipline,
-            "zone": node.zone,
             "ifc_type": node.ifc_type,
             "storage_url": node.storage_url,
         },
     )
 
 
-def _upsert_node_query(label: str, global_id: str, properties: dict[str, str | bool]) -> str:
+def _upsert_node_query(label: str, global_id: str, zone: str, properties: dict[str, str | bool]) -> str:
+    """La clé de correspondance MERGE inclut TOUJOURS la zone, en plus du
+    global_id IFC. Un GlobalId IFC n'est garanti unique qu'au sein d'un même
+    fichier/projet, pas globalement -- sans la zone dans le pattern de
+    correspondance, deux zones distinctes qui réutilisent par coïncidence le
+    même GlobalId (fichiers différents, projets différents) fusionneraient
+    sur le MÊME nœud physique, et ON MATCH SET écraserait silencieusement sa
+    propriété zone (le nœud "changerait de zone" au profit du dernier
+    ingéré). Voir aussi _merge_edge_query pour le même risque côté arêtes."""
     property_map = _build_cypher_property_map(properties)
     return (
-        f"MERGE (n:{label} {{global_id: '{_cypher_escape(global_id)}'}})"
+        f"MERGE (n:{label} {{global_id: '{_cypher_escape(global_id)}', zone: '{_cypher_escape(zone)}'}})"
         f" ON CREATE SET n += {property_map}"
         f" ON MATCH SET n += {property_map}"
     )
@@ -826,7 +1045,31 @@ def _build_cypher_property_map(properties: dict[str, str | bool]) -> str:
 def _merge_typology_node_query(global_id: str, name: str, *, zone: str = "") -> str:
     """MERGE avec ON CREATE SET / ON MATCH SET pour garantir la propriété name."""
     cleaned = _non_empty_name(name, fallback="Typology")
-    return _upsert_node_query("Typology", global_id, {"name": cleaned, "zone": zone})
+    return _upsert_node_query("Typology", global_id, zone, {"name": cleaned})
+
+
+def _delete_stale_typologies_query(floor_id: str, current_typology_ids: set[str], *, zone: str = "") -> str:
+    """Supprime les nœuds Typology d'un étage qui ne correspondent PLUS à la
+    classification actuelle. Le global_id d'une Typology encode son nom
+    (typology::<floor>::<nom>) : changer la règle de classification (ex:
+    ajout de catégories résidentielles) fait apparaître de nouveaux
+    global_id sans jamais supprimer les anciens -- sans ce nettoyage, une
+    réingestion laisse un groupe obsolète (ex: "RESIDENTIAL") orphelin à
+    côté des nouveaux groupes fins. DETACH DELETE retire aussi les relations
+    HAS_GROUP/HAS_MEMBER du nœud obsolète.
+
+    Le MATCH du Floor est scopé par zone en plus du global_id, pour la même
+    raison que _upsert_node_query/_merge_edge_query : sans ça, un GlobalId
+    IFC dupliqué par coïncidence dans une autre zone ferait DETACH DELETE des
+    Typology d'un étage appartenant à un AUTRE projet."""
+    escaped_floor_id = floor_id.replace("'", "\\'")
+    escaped_zone = zone.replace("'", "\\'")
+    id_list = ", ".join("'" + tid.replace("'", "\\'") + "'" for tid in current_typology_ids)
+    return f"""
+MATCH (f {{global_id: '{escaped_floor_id}', zone: '{escaped_zone}'}})-[:HAS_GROUP]->(old:Typology)
+WHERE NOT old.global_id IN [{id_list}]
+DETACH DELETE old
+"""
 
 
 def _merge_equipment_node_query(node: EquipmentNode) -> str:
@@ -834,6 +1077,7 @@ def _merge_equipment_node_query(node: EquipmentNode) -> str:
     return _upsert_node_query(
         "Equipment",
         node.global_id,
+        node.zone,
         {
             "name": node.name,
             "raw_name": node.raw_name,
@@ -842,16 +1086,24 @@ def _merge_equipment_node_query(node: EquipmentNode) -> str:
             "equipment_type": node.equipment_type,
             "is_read_only": node.is_read_only,
             "discipline": node.discipline,
-            "zone": node.zone,
             "storage_url": node.storage_url,
         },
     )
 
 
-def _merge_edge_query(relation: str, source_global_id: str, target_global_id: str) -> str:
+def _merge_edge_query(relation: str, source_global_id: str, target_global_id: str, *, zone: str) -> str:
+    """Le MATCH des deux extrémités est scopé par zone, pas seulement par
+    global_id. Une ingestion ne relie jamais deux zones entre elles -- source
+    et cible appartiennent toujours à LA MÊME zone en cours d'ingestion. Sans
+    ce filtre, un GlobalId IFC dupliqué par coïncidence dans une autre zone
+    (un GlobalId n'est garanti unique qu'au sein d'un même fichier/projet)
+    ferait pointer l'arête vers le nœud de cette autre zone au lieu de ne
+    créer aucune arête -- un vrai incident constaté en session avec
+    LOCATED_IN traversant vers une zone cliente live."""
+    escaped_zone = _cypher_escape(zone)
     return (
-        f"MATCH (a {{global_id: '{_cypher_escape(source_global_id)}'}}), "
-        f"(b {{global_id: '{_cypher_escape(target_global_id)}'}}) "
+        f"MATCH (a {{global_id: '{_cypher_escape(source_global_id)}', zone: '{escaped_zone}'}}), "
+        f"(b {{global_id: '{_cypher_escape(target_global_id)}', zone: '{escaped_zone}'}}) "
         f"MERGE (a)-[:{relation}]->(b)"
     )
 

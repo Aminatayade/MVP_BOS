@@ -26,17 +26,25 @@ class BimValidatorService:
         self._reader = reader
         self._rules_repository = rules_repository
 
-    def validate(self, file_path: str, discipline: str) -> ValidationReport:
-        # --- Discipline reconnue par la charte ? ---
+    def validate(self, file_path: str, disciplines: list[str]) -> ValidationReport:
+        # --- Disciplines reconnues par la charte ? ---
+        # Résolution via canonical_discipline (alias inclus) -- contrairement
+        # à l'ancienne vérification `discipline.upper() not in known_disciplines`
+        # qui ignorait la résolution d'alias (une maquette déclarée
+        # "architecture" ou "electricite" aurait été rejetée à tort).
         known_disciplines = self._rules_repository.list_disciplines()
-        if discipline.upper() not in known_disciplines:
+        unknown = [
+            d for d in disciplines
+            if self._rules_repository.canonical_discipline(d) not in known_disciplines
+        ]
+        if unknown:
             return ValidationReport(
                 success=False,
                 status=422,
                 issues=[ValidationIssue(
                     severity=Severity.ERROR,
                     code="UNKNOWN_DISCIPLINE",
-                    message=f"Discipline '{discipline}' non reconnue. "
+                    message=f"Discipline(s) non reconnue(s) : {unknown}. "
                             f"Disciplines supportées : {known_disciplines}.",
                 )],
             )
@@ -58,10 +66,14 @@ class BimValidatorService:
         schema_version = self._reader.get_schema_version()
         issues = []
 
-        # --- Règles résolues POUR CETTE DISCIPLINE ---
-        supported_schemas = self._rules_repository.get_supported_schemas(discipline)
-        business_critical_types = self._rules_repository.get_business_critical_types(discipline)
-        required_psets = self._rules_repository.get_required_property_sets(discipline)
+        # --- Règles résolues POUR CES DISCIPLINES (union) ---
+        # `get_supported_schemas` n'a pas d'équivalent pluriel : les schémas
+        # supportés viennent tous du même `common.supported_schemas` de la
+        # charte, donc appeler la version singulière sur la première
+        # discipline suffit.
+        supported_schemas = self._rules_repository.get_supported_schemas(disciplines[0])
+        business_critical_types = self._rules_repository.get_business_critical_types_union(disciplines)
+        required_psets = self._rules_repository.get_required_property_sets_union(disciplines)
 
         # --- Schéma supporté ---
         issues += rules.check_schema_supported(schema_version, supported_schemas)
@@ -70,8 +82,8 @@ class BimValidatorService:
         issues += rules.check_units(self._reader.get_units())
 
         # --- Structure spatiale (générique, indépendante de la discipline) ---
-        
-        required_spatial_elements = self._rules_repository.get_required_spatial_elements(discipline)
+
+        required_spatial_elements = self._rules_repository.get_required_spatial_elements_union(disciplines)
         spatial_summary = self._reader.get_spatial_structure_summary()
         issues += rules.check_spatial_structure(spatial_summary, required_spatial_elements)
         issues += rules.check_geospatial_origin(spatial_summary)

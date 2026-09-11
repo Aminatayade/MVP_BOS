@@ -42,7 +42,7 @@
       }
     },
     "CVC": {
-      "defines_spatial_backbone": false,
+      "defines_spatial_backbone": true,
       "required_spatial_elements": [
         "IfcBuilding",
         "IfcBuildingStorey"
@@ -284,7 +284,7 @@
       }
     },
     "STRUCTURE": {
-      "defines_spatial_backbone": false,
+      "defines_spatial_backbone": true,
       "required_spatial_elements": [
         "IfcBuilding",
         "IfcBuildingStorey"

@@ -15,8 +15,14 @@
 
 fastapi==0.110.0
 uvicorn==0.28.0
+# uvicorn (sans l'extra [standard]) n'embarque aucune implémentation du
+# protocole WebSocket -- indispensable pour la route /api/bim/ws/equipment/*
+# (rafraîchissement temps réel des popups de télémétrie), sinon le handshake
+# échoue silencieusement côté serveur.
+websockets==12.0
 python-jose[cryptography]==3.3.0
 requests==2.31.0
 httpx==0.27.0
 psycopg2-binary==2.9.9
 sqlalchemy==2.0.28
+nats-py

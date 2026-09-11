@@ -33,10 +33,18 @@ services:
     image: postgres:16-alpine
     container_name: bos_postgres
     restart: always
+    # POSTGRES_PASSWORD_FILE (secret Docker, voir secrets/README.md) au lieu
+    # d'un mot de passe en clair dans docker-compose.yml -- même mécanisme
+    # que docker-compose.fusion.yml, pour que les deux fichiers restent
+    # compatibles à la fusion (`-f docker-compose.yml -f
+    # docker-compose.fusion.yml`, l'usage réel de ce projet) sans que
+    # POSTGRES_PASSWORD et POSTGRES_PASSWORD_FILE ne coexistent en conflit.
+    secrets:
+      - postgres_password
     environment:
       POSTGRES_DB: bos_db
       POSTGRES_USER: bos_user
-      POSTGRES_PASSWORD: bos_password
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     ports:
       - "5432:5432"
     volumes:
@@ -49,10 +57,12 @@ services:
     image: postgres:16-alpine
     container_name: bos_postgres_app
     restart: always
+    secrets:
+      - postgres_app_password
     environment:
       POSTGRES_DB: bos_app_db
       POSTGRES_USER: bos_app_user
-      POSTGRES_PASSWORD: bos_app_password
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_app_password
     ports:
       - "5433:5432"  # Redirection hôte 5433 -> port natif conteneur 5432
     volumes:
@@ -66,6 +76,9 @@ services:
     container_name: bos_keycloak
     restart: always
     command: start-dev
+    # Docker secrets NON appliqué (testé : Keycloak 24 rejette
+    # KC_DB_PASSWORD_FILE, "no password was provided") -- voir le
+    # commentaire détaillé dans docker-compose.fusion.yml.
     environment:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/bos_db
@@ -87,9 +100,15 @@ services:
     restart: always
     ports:
       - "8000:8000"
+    # DATABASE_URL retiré (mot de passe en clair dans l'URL) -- database.py
+    # reconstruit l'URL à partir des parties + POSTGRES_APP_PASSWORD_FILE.
+    secrets:
+      - postgres_app_password
     environment:
-      # Connexion à la BDD Métier via le nom de service Docker (port natif 5432)
-      - DATABASE_URL=postgresql://bos_app_user:bos_app_password@postgres-app:5432/bos_app_db
+      - POSTGRES_APP_USER=bos_app_user
+      - POSTGRES_APP_PASSWORD_FILE=/run/secrets/postgres_app_password
+      - POSTGRES_APP_HOST=postgres-app
+      - POSTGRES_APP_DB=bos_app_db
       # URL réseau interne Docker : pour la récupération des clés publiques JWKS par FastAPI
       - KEYCLOAK_INTERNAL_URL=http://keycloak:8080/realms/bos-realm
       # URL externe : pour l'authentification Swagger depuis le navigateur de l'utilisateur
@@ -129,3 +148,16 @@ services:
 volumes:
   postgres_data:
   postgres_app_data:
+
+# -----------------------------------------------------------------------------
+# SECRETS DOCKER -- voir secrets/README.md pour la procédure de premier
+# démarrage (copier chaque *.txt.example vers *.txt). Mêmes fichiers que
+# docker-compose.fusion.yml : les deux se combinent sans conflit à la fusion.
+# -----------------------------------------------------------------------------
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  postgres_app_password:
+    file: ./secrets/postgres_app_password.txt
+  keycloak_admin_password:
+    file: ./secrets/keycloak_admin_password.txt

@@ -15,6 +15,7 @@
     "@types/three": "^0.185.4",
     "axios": "^1.18.1",
     "camera-controls": "^3.1.2",
+    "chart.js": "^4.4.7",
     "cytoscape": "3.34.0",
     "cytoscape-dagre": "^4.0.0",
     "dagre": "^0.8.5",

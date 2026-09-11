@@ -3,10 +3,35 @@ from application.services.bim_graph_ingestion_service import (
     _cascade_display_name,
     _merge_spatial_node_query,
     _raw_name,
+    _resolve_category_override,
     _resolve_room_typology,
     _to_spatial_node,
     SpatialNode,
 )
+
+
+def test_resolve_category_override_reclassifies_sanitary_fixture_from_generic_ifc_type():
+    # IfcFlowTerminal est un type IFC parent générique partagé entre CVC et
+    # sanitaire -- Revit y range souvent un évier faute de sous-type
+    # IfcSanitaryTerminal plus précis.
+    assert _resolve_category_override(
+        default_category="cvc", name="SAN_APS_Évier de cuisine:Évier de cuisine:6276218",
+        raw_name="SAN_APS_Évier de cuisine", object_type="",
+    ) == "sanitary"
+
+
+def test_resolve_category_override_reclassifies_cable_tray_from_generic_ifc_type():
+    assert _resolve_category_override(
+        default_category="cvc", name="Chemin de câbles avec raccords:ELG_CDC_Chemin de câbles:5927335",
+        raw_name="ELG_CDC_Chemin de câbles", object_type="",
+    ) == "electricity"
+
+
+def test_resolve_category_override_keeps_default_when_no_keyword_matches():
+    assert _resolve_category_override(
+        default_category="cvc", name="HYD_RCA_Acier_Coude_EN10253-2:3D:8416403",
+        raw_name="HYD_RCA_Acier_Coude", object_type="",
+    ) == "cvc"
 
 
 def test_ingestion_result_defaults_equipment_counters_to_zero():
@@ -32,9 +57,9 @@ def test_merge_spatial_node_query_uses_property_map_upsert_for_building():
     )
 
     assert query == (
-        "MERGE (n:Building {global_id: '3eM8WbY_59RR5TDWry5aRU'})"
-        " ON CREATE SET n += {name: 'Main Building', raw_name: 'BAT-01', discipline: 'ARCHI', zone: 'Batiment Principal', ifc_type: 'IfcBuilding', storage_url: 'http://storage.local/models/building.ifc'}"
-        " ON MATCH SET n += {name: 'Main Building', raw_name: 'BAT-01', discipline: 'ARCHI', zone: 'Batiment Principal', ifc_type: 'IfcBuilding', storage_url: 'http://storage.local/models/building.ifc'}"
+        "MERGE (n:Building {global_id: '3eM8WbY_59RR5TDWry5aRU', zone: 'Batiment Principal'})"
+        " ON CREATE SET n += {name: 'Main Building', raw_name: 'BAT-01', discipline: 'ARCHI', ifc_type: 'IfcBuilding', storage_url: 'http://storage.local/models/building.ifc'}"
+        " ON MATCH SET n += {name: 'Main Building', raw_name: 'BAT-01', discipline: 'ARCHI', ifc_type: 'IfcBuilding', storage_url: 'http://storage.local/models/building.ifc'}"
     )
 
 

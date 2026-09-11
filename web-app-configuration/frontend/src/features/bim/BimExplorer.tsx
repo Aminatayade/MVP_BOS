@@ -11,8 +11,10 @@
 import { useRef, useState } from 'react'
 import BimGraphViewer from './components/BimGraphViewer'
 import BimModelViewer from './components/BimModelViewer'
+import TypologyPanel from './components/TypologyPanel'
 import NodeInspector from './components/NodeInspector'
-import { getBuildings, getModelSources, ingestBatch, type ModelSource } from './services/arcadeApi'
+import DisciplinePicker from './components/DisciplinePicker'
+import { deleteZone, getBuildings, getModelSources, ingestBatch, type ModelSource } from './services/arcadeApi'
 import { arcadeRowsToNodeList, nodeElement, type CytoscapeElement } from './utils/graphUtils'
 
 // Grafana tourne comme service à part (pas via l'API Gateway) : le navigateur
@@ -78,7 +80,7 @@ const disciplines = [
 
 type SelectedFile = {
   file: File
-  discipline: string
+  disciplines: string[]
 }
 
 /**
@@ -141,14 +143,34 @@ async function collectFilesFromDataTransfer(dataTransfer: DataTransfer): Promise
 
 export default function BimExplorer() {
   const [open, setOpen] = useState(false)
-  const [defaultDiscipline, setDefaultDiscipline] = useState('ARCHI')
+  const [defaultDisciplines, setDefaultDisciplines] = useState<string[]>(['ARCHI'])
   const [zone, setZone] = useState('')
   const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([])
   const [status, setStatus] = useState('')
   const [batchResults, setBatchResults] = useState<BatchResponse | null>(null)
   const [loading, setLoading] = useState(false)
+  const [deletingZone, setDeletingZone] = useState(false)
   const [showVisualizer, setShowVisualizer] = useState(false)
-  const [explorerTab, setExplorerTab] = useState<'graph' | 'model' | 'supervision'>('graph')
+  const [explorerTab, setExplorerTab] = useState<'graph' | 'model' | 'supervision' | 'duo'>('graph')
+  // Sélection croisée Mode Duo : l'élément (id + type) cliqué dans L'UN OU
+  // L'AUTRE panneau, transmis à l'autre pour qu'il se sélectionne/recadre
+  // dessus (le type sert à BimModelViewer pour distinguer un Floor -> plan
+  // 2D découpé, des autres types -> simple recadrage caméra). Vit ici
+  // (parent commun) plutôt que dans un des deux viewers -- aucun des deux ne
+  // doit connaître l'existence de l'autre.
+  const [crossSelected, setCrossSelected] = useState<{ id: string; type: string } | null>(null)
+  // Bouton "Coloriser en 3D" de TypologyPanel (Mode Duo) : GlobalId des
+  // pièces à peindre + couleur choisie par l'utilisateur (pas de couleur
+  // fixe -- chaque typologie a son propre sélecteur). `null` = aucune
+  // coloration active.
+  const [colorGroup, setColorGroup] = useState<{ ids: string[]; color: string } | null>(null)
+  // Typologies actuellement visibles dans le graphe (panneau "Contexte de
+  // pièces", Mode Duo) -- alimenté par BimGraphViewer.onTypologiesChange,
+  // PAS dérivé de `visualElements` : les nœuds ajoutés par dépliage
+  // n'existent que dans l'instance Cytoscape interne du graphe, jamais dans
+  // cette prop figée à l'état initial (bug corrigé -- le panneau restait
+  // vide quelle que soit l'étage déplié).
+  const [typologies, setTypologies] = useState<{ id: string; label: string }[]>([])
   const [modelSources, setModelSources] = useState<ModelSource[]>([])
   const [visualElements, setVisualElements] = useState<CytoscapeElement[]>([])
   const [selectedNodeInfo, setSelectedNodeInfo] = useState<any | null>(null)
@@ -164,7 +186,7 @@ export default function BimExplorer() {
     }
     setSelectedFiles((prev) => [
       ...prev,
-      ...ifcFiles.map((file) => ({ file, discipline: defaultDiscipline })),
+      ...ifcFiles.map((file) => ({ file, disciplines: [...defaultDisciplines] })),
     ])
     setStatus(
       ifcFiles.length < files.length
@@ -201,8 +223,8 @@ export default function BimExplorer() {
     }
   }
 
-  const updateFileDiscipline = (index: number, discipline: string) => {
-    setSelectedFiles((prev) => prev.map((entry, i) => (i === index ? { ...entry, discipline } : entry)))
+  const updateFileDisciplines = (index: number, disciplines: string[]) => {
+    setSelectedFiles((prev) => prev.map((entry, i) => (i === index ? { ...entry, disciplines } : entry)))
   }
 
   const handleSubmit = async () => {
@@ -214,6 +236,11 @@ export default function BimExplorer() {
       setStatus('Indiquez une zone/bâtiment (ex: "Batiment A", "Parking B").')
       return
     }
+    const missingDiscipline = selectedFiles.find(({ disciplines }) => disciplines.length === 0)
+    if (missingDiscipline) {
+      setStatus(`Sélectionnez au moins une discipline pour "${missingDiscipline.file.name}".`)
+      return
+    }
 
     setLoading(true)
     setStatus(`Validation en cours (${selectedFiles.length} fichier(s))...`)
@@ -221,9 +248,9 @@ export default function BimExplorer() {
 
     try {
       const filesData = await Promise.all(
-        selectedFiles.map(async ({ file, discipline }) => ({
+        selectedFiles.map(async ({ file, disciplines }) => ({
           name: file.name,
-          discipline,
+          disciplines,
           content: await new Promise<string>((resolve) => {
             const reader = new FileReader()
             reader.onload = () => {
@@ -250,6 +277,14 @@ export default function BimExplorer() {
   }
 
   const openVisualizer = async () => {
+    // Sans ce garde, un appel avec une zone vide (avant que l'utilisateur
+    // ait rien tapé) renvoyait TOUS les bâtiments jamais ingérés, toutes
+    // zones confondues (le backend traite "" comme "pas de filtre") --
+    // plusieurs Building s'affichaient alors ensemble dans le graphe.
+    if (!zone.trim()) {
+      setStatus('Indiquez une zone/bâtiment (ex: "Batiment A", "Parking B") pour charger le graphe.')
+      return
+    }
     setStatus('Chargement des bâtiments...')
     setSelectedNodeInfo(null)
     setExplorerTab('graph')
@@ -269,18 +304,78 @@ export default function BimExplorer() {
     }
   }
 
+  // Nettoyage d'une maquette de test : supprime tout le graphe (Building/
+  // Floor/Room/Equipment/Typology) ET l'historique time-series de la zone.
+  // Sans ça, une zone abandonnée reste visible indéfiniment -- plusieurs
+  // Building s'affichent ensemble dans le graphe, et le dashboard Grafana
+  // garde des entrées mortes pointant vers des données qui n'existent plus
+  // ("No data"). Irréversible : confirmation obligatoire avant l'appel.
+  const handleDeleteZone = async () => {
+    const trimmed = zone.trim()
+    if (!trimmed) {
+      setStatus('Indiquez la zone à supprimer.')
+      return
+    }
+    const confirmed = window.confirm(
+      `Supprimer définitivement toute la maquette de la zone « ${trimmed} » ` +
+      `(bâtiment, étages, pièces, équipements, historique de mesures) ? Cette action est irréversible.`,
+    )
+    if (!confirmed) return
+
+    setDeletingZone(true)
+    setStatus(`Suppression de la zone « ${trimmed} »...`)
+    try {
+      const result = await deleteZone(trimmed)
+      setVisualElements([])
+      setShowVisualizer(false)
+      setModelSources([])
+      setStatus(
+        `Zone « ${trimmed} » supprimée (${result.deleted_nodes.Building ?? 0} bâtiment(s), ` +
+        `${result.deleted_nodes.Room ?? 0} pièce(s), ${result.deleted_nodes.Equipment ?? 0} équipement(s), ` +
+        `${result.deleted_readings} mesure(s) time-series).`,
+      )
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : 'Erreur lors de la suppression')
+    } finally {
+      setDeletingZone(false)
+    }
+  }
+
+  // /graph/sources exige une zone non vide (400 "zone query param is
+  // required" sinon) -- sans ce garde-fou, cliquer Maquette 3D/Mode Duo
+  // avant d'avoir renseigné de zone affichait l'erreur brute du backend en
+  // haut de l'explorateur, et elle y restait affichée même en revenant sur
+  // un autre onglet ensuite (rien ne l'écrase après coup).
+  const loadModelSources = async (): Promise<boolean> => {
+    if (!zone.trim()) {
+      setStatus('Indiquez une zone/bâtiment (ex: "Batiment A", "Parking B") pour charger la maquette 3D.')
+      return false
+    }
+    try {
+      const found = await getModelSources(zone.trim())
+      setModelSources(found)
+      return true
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : 'Erreur')
+      return false
+    }
+  }
+
   const openModelTab = async () => {
     setExplorerTab('model')
     // Toujours recharger : la maquette 3D doit refléter la dernière
     // ingestion, pas la première visite de cet onglet dans la session (bug
     // remonté -- l'ancien garde-fou ne rechargeait plus jamais après le
     // premier chargement).
-    try {
-      const found = await getModelSources(zone.trim())
-      setModelSources(found)
-    } catch (err) {
-      setStatus(err instanceof Error ? err.message : 'Erreur')
-    }
+    await loadModelSources()
+  }
+
+  // Mode duo : graphe et jumeau numérique 3D affichés côte à côte -- même
+  // rechargement des sources de maquette que l'onglet "Maquette 3D" seul,
+  // la 3D a besoin des mêmes données quel que soit le mode d'affichage.
+  const openDuoTab = async () => {
+    setExplorerTab('duo')
+    await loadModelSources()
   }
 
   if (!open) {
@@ -343,6 +438,14 @@ export default function BimExplorer() {
               >
                 Supervision
               </button>
+              <button
+                type="button"
+                className={explorerTab === 'duo' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm'}
+                style={explorerTab !== 'duo' ? { color: '#cbd8e8' } : undefined}
+                onClick={openDuoTab}
+              >
+                Mode Duo
+              </button>
             </div>
             <button
               type="button"
@@ -379,6 +482,45 @@ export default function BimExplorer() {
           <div style={{ flex: 1, padding: 16, minHeight: 0, minWidth: 0 }}>
             <BimModelViewer sources={modelSources} zone={zone.trim()} height="100%" />
           </div>
+        ) : explorerTab === 'duo' ? (
+          <div style={{ flex: 1, display: 'flex', gap: 12, padding: 16, minHeight: 0, minWidth: 0 }}>
+            {/* Même précaution minWidth/minHeight: 0 que l'onglet Graphe seul
+                -- indispensable pour que les deux panneaux flex se partagent
+                réellement l'espace au lieu de grossir sur leur contenu. */}
+            <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
+              <BimGraphViewer
+                elements={visualElements}
+                onNodeSelect={(data) => {
+                  setSelectedNodeInfo(data)
+                  if (typeof data.id === 'string') setCrossSelected({ id: data.id, type: String(data.type ?? '') })
+                }}
+                focusNodeId={crossSelected?.id}
+                onTypologiesChange={setTypologies}
+                autoExpandOnClick
+                height="100%"
+              />
+            </div>
+            <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
+              <BimModelViewer
+                sources={modelSources}
+                zone={zone.trim()}
+                height="100%"
+                onElementSelect={(globalId, ifcType) => setCrossSelected({ id: globalId, type: ifcType })}
+                focusElement={crossSelected}
+                colorGroup={colorGroup}
+              />
+            </div>
+            {/* Colonne fine dédiée aux typologies (bureau/réunion/résidentiel...)
+                -- pas une popup flottante par-dessus le graphe (retour
+                utilisateur : "surchargé"), une barre latérale persistante
+                comme le panneau "Contexte de pièces" de SpinalCore. */}
+            <div style={{ width: 220, flexShrink: 0, minHeight: 0 }}>
+              <TypologyPanel
+                typologies={typologies}
+                onColorRooms={(roomIds, color) => setColorGroup(roomIds.length > 0 ? { ids: roomIds, color } : null)}
+              />
+            </div>
+          </div>
         ) : (
           <div style={{ flex: 1, padding: 16, minHeight: 0, minWidth: 0 }}>
             {/* Mode kiosk : masque la nav bar/le logo Grafana, le client ne voit
@@ -406,8 +548,8 @@ export default function BimExplorer() {
           <h2 style={{ fontSize: 17, marginBottom: 6 }}>Explorateur BIM</h2>
           <p className="muted" style={{ fontSize: 13, maxWidth: 560 }}>
             Chargez autant de maquettes IFC que vous voulez pour un même bâtiment — une par discipline
-            ou plusieurs à la fois — puis laissez le backend valider et ingérer chaque fichier selon sa
-            propre discipline.
+            ou plusieurs à la fois — puis laissez le backend valider et ingérer chaque fichier selon ses
+            disciplines (une maquette mixte, ex: CVSE, peut cumuler plusieurs disciplines à la fois).
           </p>
         </div>
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => setOpen(false)}>
@@ -417,12 +559,8 @@ export default function BimExplorer() {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
         <div className="field">
-          <label>Discipline par défaut (nouveaux fichiers)</label>
-          <select className="input" value={defaultDiscipline} onChange={(event) => setDefaultDiscipline(event.target.value)}>
-            {disciplines.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-          </select>
+          <label>Discipline(s) par défaut (nouveaux fichiers)</label>
+          <DisciplinePicker options={disciplines} selected={defaultDisciplines} onChange={setDefaultDisciplines} />
           <small>Modifiable individuellement dans la liste ci-dessous.</small>
         </div>
 
@@ -436,6 +574,18 @@ export default function BimExplorer() {
             onChange={(event) => setZone(event.target.value)}
           />
           <small>Sert à rattacher les équipements au bon Room/Floor.</small>
+          {zone.trim() && (
+            <button
+              type="button"
+              className="btn btn-danger"
+              style={{ marginTop: 8, fontSize: 12.5, padding: '6px 10px' }}
+              onClick={handleDeleteZone}
+              disabled={deletingZone}
+              title="Supprime définitivement toute la maquette de cette zone (graphe + historique)"
+            >
+              {deletingZone ? 'Suppression...' : `🗑 Supprimer la zone « ${zone.trim()} »`}
+            </button>
+          )}
         </div>
       </div>
 
@@ -477,16 +627,16 @@ export default function BimExplorer() {
 
       {selectedFiles.length > 0 && (
         <div style={{ marginTop: '16px' }}>
-          <small className="muted">Fichiers sélectionnés (discipline modifiable par fichier) :</small>
+          <small className="muted">Fichiers sélectionnés (discipline(s) modifiable(s) par fichier) :</small>
           <div style={{ marginTop: 8 }}>
-            {selectedFiles.map(({ file, discipline }, index) => (
+            {selectedFiles.map(({ file, disciplines: fileDisciplines }, index) => (
               <div className="file-row" key={`${file.name}-${index}`}>
                 <span className="file-row__name">{file.name}</span>
-                <select className="input" style={{ width: 'auto', padding: '5px 8px', fontSize: 12.5 }} value={discipline} onChange={(event) => updateFileDiscipline(index, event.target.value)}>
-                  {disciplines.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
+                <DisciplinePicker
+                  options={disciplines}
+                  selected={fileDisciplines}
+                  onChange={(next) => updateFileDisciplines(index, next)}
+                />
                 <button type="button" className="file-row__remove" onClick={() => setSelectedFiles(selectedFiles.filter((_, i) => i !== index))}>
                   ✕
                 </button>

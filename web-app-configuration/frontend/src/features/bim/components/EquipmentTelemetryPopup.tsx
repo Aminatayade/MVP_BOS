@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
-import { getEquipmentSummary, type EquipmentMetricSummary } from '../services/arcadeApi'
+import { formatMetricValue, truncateLabel } from '../services/arcadeApi'
+import { useEquipmentTelemetry } from '../hooks/useEquipmentTelemetry'
+import MetricHistoryPanel from './MetricHistoryPanel'
 
 type Props = {
   globalId: string
@@ -11,41 +12,27 @@ type Props = {
 
 // Popup flottante ancrée sur le nœud Equipment cliqué dans le graphe
 // (coordonnées écran fournies par BimGraphViewer via node.renderedPosition()).
-// Pas de mini-graphique pour cette itération : valeur courante uniquement --
-// la visualisation de l'historique est prévue côté ThatOpen (3D) plus tard.
-// `history` est déjà renvoyée par l'API (voir arcadeApi.ts) pour ce futur usage.
+// Valeur courante + historique tenus à jour en temps réel via WebSocket, voir
+// useEquipmentTelemetry.
 export default function EquipmentTelemetryPopup({ globalId, label, x, y, onClose }: Props) {
-  const [metrics, setMetrics] = useState<EquipmentMetricSummary[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    setMetrics(null)
-    setError(null)
-
-    getEquipmentSummary(globalId)
-      .then((result) => {
-        if (!cancelled) setMetrics(result)
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Erreur inattendue')
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [globalId])
+  const { metrics, error } = useEquipmentTelemetry(globalId)
 
   return (
     <div
       className="equipment-popup"
-      style={{ position: 'absolute', left: x + 24, top: y, transform: 'translateY(-50%)' }}
+      // width/boxSizing en dur : garantit la largeur même si la feuille de
+      // style externe n'a pas (encore) été rechargée par le navigateur --
+      // la classe CSS reste la source de vérité pour le reste (couleurs,
+      // ombre...), seule la contrainte de largeur est dupliquée ici.
+      style={{ position: 'absolute', left: x + 24, top: y, transform: 'translateY(-50%)', width: 220, boxSizing: 'border-box' }}
       // Un clic dans la popup ne doit pas se propager jusqu'au fond du canvas
       // (qui ferme la popup) ni jusqu'à Cytoscape (pan/zoom).
       onClick={(event) => event.stopPropagation()}
     >
       <div className="equipment-popup__head">
-        <span className="equipment-popup__title">{label}</span>
+        <span className="equipment-popup__title" title={label}>
+          {truncateLabel(label)}
+        </span>
         <button type="button" className="equipment-popup__close" onClick={onClose} aria-label="Fermer">
           ✕
         </button>
@@ -61,22 +48,15 @@ export default function EquipmentTelemetryPopup({ globalId, label, x, y, onClose
 
       {!error && metrics !== null && metrics.length > 0 && (
         <div className="equipment-popup__metrics">
-          {metrics.map((m) => {
-            const rawValue = m.current?.value
-            const displayValue =
-              rawValue !== undefined && rawValue !== null
-                ? m.value_labels?.[String(rawValue)] ?? rawValue
-                : '—'
-            return (
-              <div key={m.metric} className="equipment-popup__metric">
+          {metrics.map((m) => (
+            <div key={m.metric} className="equipment-popup__metric-block">
+              <div className="equipment-popup__metric">
                 <span className="equipment-popup__metric-name">{m.metric}</span>
-                <span className="equipment-popup__metric-value">
-                  {displayValue}
-                  {typeof displayValue === 'number' && m.unit ? ` ${m.unit}` : ''}
-                </span>
+                <span className="equipment-popup__metric-value">{formatMetricValue(m)}</span>
               </div>
-            )
-          })}
+              <MetricHistoryPanel metric={m} />
+            </div>
+          ))}
         </div>
       )}
     </div>

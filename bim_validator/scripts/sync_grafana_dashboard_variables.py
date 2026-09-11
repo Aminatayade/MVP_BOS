@@ -28,6 +28,7 @@ Usage :
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -35,6 +36,8 @@ import sys
 import requests
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from infrastructure.secrets import read_secret
 
 DASHBOARD_UID = "bos-equipment-demo"
 
@@ -86,14 +89,21 @@ def _arcadedb_query(*, base_url: str, database: str, username: str, password: st
     return response.json().get("result", [])
 
 
-def _build_location_options(*, base_url: str, database: str, username: str, password: str) -> str:
+def _build_location_options(*, base_url: str, database: str, username: str, password: str, zone: str = "") -> str:
+    # Sans filtre de zone, cette liste accumule TOUS les Room/Floor jamais
+    # ingérés (toutes zones confondues) -- plusieurs maquettes de test avec
+    # des noms de pièces identiques finissent dupliquées dans le menu
+    # déroulant Grafana, certaines pointant vers un global_id d'une zone
+    # qui n'a plus cours ("No data"). --zone scope à UNE zone, cohérent
+    # avec le reste du produit (voir /graph/buildings, /graph/floors).
+    zone_filter = f" WHERE zone = '{zone}'" if zone else ""
     rooms = _arcadedb_query(
         base_url=base_url, database=database, username=username, password=password,
-        sql="SELECT global_id, name FROM Room",
+        sql=f"SELECT global_id, name FROM Room{zone_filter}",
     )
     floors = _arcadedb_query(
         base_url=base_url, database=database, username=username, password=password,
-        sql="SELECT global_id, name FROM Floor",
+        sql=f"SELECT global_id, name FROM Floor{zone_filter}",
     )
     entries = rooms + floors
     if not entries:
@@ -102,14 +112,24 @@ def _build_location_options(*, base_url: str, database: str, username: str, pass
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--zone", default=os.environ.get("BOS_ZONE", ""),
+        help="Limite la liste 'location' à cette zone (recommandé -- sinon toutes les zones jamais "
+             "ingérées sont mélangées). Peut aussi être fourni via la variable d'environnement BOS_ZONE.",
+    )
+    args = parser.parse_args()
+
     grafana_url = os.environ.get("GRAFANA_URL", "http://localhost:3000")
     grafana_user = os.environ.get("GRAFANA_ADMIN_USER", "admin")
-    grafana_password = os.environ["GRAFANA_ADMIN_PASSWORD"]
+    grafana_password = read_secret("GRAFANA_ADMIN_PASSWORD")
+    if not grafana_password:
+        raise RuntimeError("GRAFANA_ADMIN_PASSWORD (ou GRAFANA_ADMIN_PASSWORD_FILE) doit être défini.")
 
     arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
     arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
     arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-    arcadedb_password = os.environ.get("ARCADEDB_PASSWORD", "testBIM123")
+    arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
 
     auth = (grafana_user, grafana_password)
     get_resp = requests.get(f"{grafana_url}/api/dashboards/uid/{DASHBOARD_UID}", auth=auth, timeout=30)
@@ -119,7 +139,7 @@ def main() -> None:
 
     location_options = _build_location_options(
         base_url=arcadedb_base_url, database=arcadedb_database,
-        username=arcadedb_username, password=arcadedb_password,
+        username=arcadedb_username, password=arcadedb_password, zone=args.zone,
     )
     metric_options = _build_metric_options()
 

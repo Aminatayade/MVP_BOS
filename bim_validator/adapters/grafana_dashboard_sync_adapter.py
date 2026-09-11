@@ -61,8 +61,8 @@ class GrafanaDashboardSyncAdapter(GrafanaDashboardSyncPort):
         self._equipment_catalog = equipment_catalog
         self._timeout_seconds = timeout_seconds
 
-    def sync_variables(self) -> None:
-        location_options = self._build_location_options()
+    def sync_variables(self, *, zone: str = "") -> None:
+        location_options = self._build_location_options(zone=zone)
         if not location_options:
             # Aucun Room/Floor en base -- rien de pertinent à synchroniser
             # (ex: maquette architecture pas encore ingérée).
@@ -100,9 +100,20 @@ class GrafanaDashboardSyncAdapter(GrafanaDashboardSyncPort):
         label, value = options.split(",")[0].split(" : ")
         variable["current"] = {"text": label, "value": value}
 
-    def _build_location_options(self) -> str:
-        rooms = self._graph_repository.query_sql("SELECT global_id, name FROM Room").get("result", [])
-        floors = self._graph_repository.query_sql("SELECT global_id, name FROM Floor").get("result", [])
+    def _build_location_options(self, *, zone: str = "") -> str:
+        # SANS filtre de zone (comportement d'origine), cette liste
+        # accumule TOUS les Room/Floor jamais ingérés, toutes zones
+        # confondues -- plusieurs maquettes résidentielles de test avec des
+        # noms de pièces identiques ("Bedroom 2", "Foyer"...) finissaient
+        # dupliquées dans le menu déroulant Grafana, dont certaines
+        # pointant vers un global_id d'une zone qui n'a plus cours (d'où
+        # les "No data" observés). Scopé à la zone qui vient d'être
+        # ingérée : le dashboard reste cohérent avec LA zone active,
+        # comme le reste du produit (voir /graph/buildings, /graph/floors).
+        escaped_zone = zone.replace("'", "\\'")
+        zone_filter = f" WHERE zone = '{escaped_zone}'" if zone else ""
+        rooms = self._graph_repository.query_sql(f"SELECT global_id, name FROM Room{zone_filter}").get("result", [])
+        floors = self._graph_repository.query_sql(f"SELECT global_id, name FROM Floor{zone_filter}").get("result", [])
         entries = rooms + floors
         return ",".join(
             f"{row['name']} : {row['global_id']}" for row in entries if row.get("global_id") and row.get("name")

@@ -63,6 +63,26 @@ export function equipmentGroupPlaceholder(parentId: string, count: number): Cyto
   }
 }
 
+// Repli par groupe de type au dépliage d'un nœud parent avec beaucoup
+// d'enfants du même type (ex: 11 Room sous un Level) -- même principe
+// visuel que equipmentGroupPlaceholder, mais les nœuds réels sont déjà en
+// mémoire (fournis en un seul appel par /graph/neighbors) : pas de fetch
+// séparé au dépliage, contrairement au groupe d'équipements
+// (/graph/room-equipment). Le contenu réel est stocké côté composant
+// (ref, hors Cytoscape) et matérialisé au clic sur ce placeholder.
+export function nodeGroupPlaceholder(parentId: string, type: string, count: number, labelPlural: string): CytoscapeElement {
+  return {
+    data: {
+      id: `${parentId}-${type.toLowerCase()}-group`,
+      label: `${count} ${labelPlural}`,
+      type: `${type}Group`,
+      placeholder: true,
+      context: 'node-group',
+      parentId,
+    },
+  }
+}
+
 export function buildElementsFromFloorView(rows: unknown[]): CytoscapeElement[] {
   const nodesMap = new Map<string, CytoscapeElement>()
   const edges: CytoscapeElement[] = []

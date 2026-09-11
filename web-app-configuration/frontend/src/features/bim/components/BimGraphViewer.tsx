@@ -1,20 +1,79 @@
 import { useEffect, useRef, useState } from 'react'
 import cytoscape, { type Core, type ElementDefinition } from 'cytoscape'
 import dagre from 'cytoscape-dagre'
-import { getNodeChildren, getRoomEquipment } from '../services/arcadeApi'
+import { getLocationReadings, getNodeChildren, getRoomEquipment } from '../services/arcadeApi'
 import type { CytoscapeElement } from '../utils/graphUtils'
-import { edgeElement, equipmentGroupPlaceholder, nodeElement, parseArcadeNode } from '../utils/graphUtils'
+import { edgeElement, equipmentGroupPlaceholder, nodeElement, nodeGroupPlaceholder, parseArcadeNode } from '../utils/graphUtils'
 import EquipmentTelemetryPopup from './EquipmentTelemetryPopup'
+import RoomTelemetryPopup from './RoomTelemetryPopup'
 
 cytoscape.use(dagre)
 
 export const DAGRE_LAYOUT = {
   name: 'dagre',
   rankDir: 'LR',
-  nodeSep: 25,
-  rankSep: 120,
+  nodeSep: 14,
+  rankSep: 70,
   animate: true,
 } as const
+
+const OVERHEAT_THRESHOLD_CELSIUS = 35
+const ROOM_TEMPERATURE_REFRESH_MS = 30_000
+
+// Au-delà de ce nombre d'enfants d'un même type sous un nœud déplié
+// (typiquement des Room sous un Level), on les replie en un seul nœud
+// groupé plutôt que de les afficher tous -- c'est ce qui transforme
+// l'affichage en "soleil" illisible sur les étages à beaucoup de pièces.
+// Typology est délibérément EXCLU de ce regroupement : TypologyPanel
+// (panneau "Contexte de pièces") s'alimente uniquement des nœuds Typology
+// réellement présents dans Cytoscape (onTypologiesChange plus bas) -- les
+// replier les ferait disparaître du panneau tant que l'utilisateur n'a pas
+// cliqué pour déplier, ce qui reproduirait le bug déjà corrigé "rien
+// n'apparaît dans Contexte de pièces".
+const GROUP_THRESHOLD = 4
+const GROUPABLE_TYPE_LABELS: Record<string, string> = {
+  Room: 'pièces',
+  Space: 'pièces',
+}
+
+// Sous-groupage du placeholder "N équipements" (voir la branche
+// data.context === 'room-equipment' plus bas) : sans ça, matérialiser le
+// groupe dépose TOUS les équipements d'un coup -- jusqu'à plusieurs
+// dizaines sur un étage entier -- exactement le "soleil" illisible
+// remonté. Regroupé par `category` (cvc/electricity/security/sanitary/
+// furniture/controls, déjà présente sur chaque nœud Equipment pour
+// l'icône), qui réutilise le mécanisme générique de placeholder
+// (nodeGroupPlaceholder / context "node-group") déjà en place pour
+// Room/Space.
+const EQUIPMENT_CATEGORY_LABELS: Record<string, string> = {
+  cvc: 'équipements CVC',
+  electricity: 'équipements électriques',
+  security: 'équipements sécurité',
+  sanitary: 'équipements sanitaires',
+  furniture: 'mobilier',
+  controls: 'automates/contrôleurs',
+}
+
+/**
+ * Colore une pièce en rouge (classe `.overheated`, voir le style Cytoscape
+ * plus bas) quand la température moyenne de ses équipements atteint le
+ * seuil. Best-effort : une pièce sans équipement CVC/température (ou en
+ * échec réseau) reste dans son état courant plutôt que de planter le rendu
+ * du graphe.
+ */
+async function refreshRoomTemperature(cy: Core, roomId: string): Promise<void> {
+  try {
+    const readings = await getLocationReadings(roomId, 'temperature')
+    const latest = readings[readings.length - 1]
+    const node = cy.getElementById(roomId)
+    if (node.empty()) return
+    node.toggleClass('overheated', latest !== undefined && latest.value >= OVERHEAT_THRESHOLD_CELSIUS)
+  } catch {
+    // Pas de télémétrie température pour cette pièce (pas d'équipement CVC
+    // rattaché) ou requête en échec -- ne jamais faire planter le graphe
+    // pour ça, la pièce reste simplement dans son état de couleur courant.
+  }
+}
 
 type Props = {
   elements?: CytoscapeElement[]
@@ -23,6 +82,18 @@ type Props = {
   className?: string
   height?: string | number
   autoExpandOnClick?: boolean
+  // Sélection croisée (Mode Duo, voir BimExplorer.tsx) : un GlobalId
+  // sélectionné côté maquette 3D -- sélectionne et recadre le nœud
+  // correspondant s'il est déjà présent dans le graphe affiché (pas de
+  // dépliage automatique : un nœud pas encore chargé reste simplement non
+  // trouvé, cohérent avec le dépliage manuel du reste du graphe).
+  focusNodeId?: string | null
+  // Panneau "Contexte de pièces" (Mode Duo, voir TypologyPanel.tsx) : les
+  // nœuds Typology ajoutés au graphe (dépliage d'un étage) vivent
+  // uniquement dans l'instance Cytoscape interne, jamais dans la prop
+  // `elements` du parent -- ce callback est le seul moyen pour le parent de
+  // savoir "quelles typologies sont actuellement visibles dans le graphe".
+  onTypologiesChange?: (typologies: { id: string; label: string }[]) => void
 }
 
 function toElementDefinitions(elements: CytoscapeElement[]): ElementDefinition[] {
@@ -32,6 +103,32 @@ function toElementDefinitions(elements: CytoscapeElement[]): ElementDefinition[]
     }
     return { group: 'nodes', data: element.data }
   })
+}
+
+/**
+ * Referme le sous-arbre ouvert par le dépliage de `nodeId` -- ré-clic sur un
+ * nœud déjà déplié (voir l'appel dans le handler de tap) : bascule
+ * ouvrir/fermer, sans toucher au reste du graphe. `successors()` ne suit
+ * que les arêtes SORTANTES depuis ce nœud -- exactement les éléments
+ * ajoutés par SES propres dépliages, jamais un nœud partagé ajouté par un
+ * autre parent (ex: une Room membre d'une Typology déjà dépliée ailleurs).
+ * `nodeId` lui-même n'est PAS retiré : il redevient simplement re-dépliable.
+ */
+function collapseSubtree(
+  cy: Core,
+  nodeId: string,
+  expandedRef: { current: Set<string> },
+  groupedChildrenRef: { current: Map<string, CytoscapeElement['data'][]> },
+) {
+  const node = cy.getElementById(nodeId)
+  if (node.empty()) return
+  const descendants = node.successors()
+  descendants.nodes().forEach((n) => {
+    groupedChildrenRef.current.delete(n.id())
+    expandedRef.current.delete(n.id())
+  })
+  descendants.remove()
+  expandedRef.current.delete(nodeId)
 }
 
 function runLayout(cy: Core) {
@@ -53,11 +150,19 @@ export default function BimGraphViewer({
   className,
   height = '600px',
   autoExpandOnClick = true,
+  focusNodeId,
+  onTypologiesChange,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const cyRef = useRef<Core | null>(null)
   const expandedRef = useRef<Set<string>>(new Set())
+  // Contenu réel (déjà résolu par /graph/neighbors) d'un groupe replié
+  // Room/Space -- placeholderId -> liste de nœuds à matérialiser au clic.
+  const groupedChildrenRef = useRef<Map<string, CytoscapeElement['data'][]>>(new Map())
   const [equipmentPopup, setEquipmentPopup] = useState<
+    { nodeId: string; x: number; y: number; label: string } | null
+  >(null)
+  const [roomPopup, setRoomPopup] = useState<
     { nodeId: string; x: number; y: number; label: string } | null
   >(null)
 
@@ -71,6 +176,8 @@ export default function BimGraphViewer({
   onNodeSelectRef.current = onNodeSelect
   const onPlaceholderClickRef = useRef(onPlaceholderClick)
   onPlaceholderClickRef.current = onPlaceholderClick
+  const onTypologiesChangeRef = useRef(onTypologiesChange)
+  onTypologiesChangeRef.current = onTypologiesChange
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -109,16 +216,16 @@ export default function BimGraphViewer({
               color: '#e2e8f0',
               'text-halign': 'right',
               'text-valign': 'center',
-              'text-margin-x': 10,
-              'font-size': 11,
+              'text-margin-x': 6,
+              'font-size': 9,
               'font-family': 'Inter, ui-sans-serif, system-ui',
-              width: 36,
-              height: 36,
+              width: 24,
+              height: 24,
               'background-color': '#475569',
               'background-image': 'data(icon)',
               'background-fit': 'cover',
               'background-clip': 'node',
-              'border-width': 2,
+              'border-width': 1.5,
               'border-color': '#64748b',
             },
           },
@@ -128,8 +235,8 @@ export default function BimGraphViewer({
               'background-color': '#f97316',
               shape: 'round-rectangle',
               width: 'label',
-              height: 32,
-              padding: '10px',
+              height: 22,
+              padding: '6px',
               'font-weight': 600,
             },
           },
@@ -146,14 +253,35 @@ export default function BimGraphViewer({
             style: { 'background-color': '#7c3aed', 'border-color': '#a78bfa' },
           },
           {
+            // Groupe de pièces par typologie (bureau, réunion, sanitaire...),
+            // déjà créé à l'ingestion (HAS_GROUP depuis l'étage, HAS_MEMBER
+            // vers chaque pièce) mais jamais stylé jusqu'ici -- se confondait
+            // avec le style générique gris.
+            selector: 'node[type="Typology"]',
+            style: {
+              'background-color': '#f59e0b',
+              'border-color': '#fbbf24',
+              shape: 'round-rectangle',
+              width: 'label',
+              padding: '8px',
+            },
+          },
+          {
+            // Placée APRÈS la règle Room ci-dessus : Cytoscape applique les
+            // règles de style dans l'ordre, celle-ci doit gagner quand la
+            // pièce est en surchauffe (voir refreshRoomTemperature).
+            selector: 'node.overheated',
+            style: { 'background-color': '#dc2626', 'border-color': '#f87171' },
+          },
+          {
             selector: 'node[type="Equipment"]',
             style: {
               'background-color': '#a3e635',
               color: '#1a202c',
               shape: 'round-rectangle',
-              width: 44,
-              height: 28,
-              'font-size': 10,
+              width: 30,
+              height: 18,
+              'font-size': 8,
               'border-color': '#84cc16',
             },
           },
@@ -194,6 +322,7 @@ export default function BimGraphViewer({
         // contiendrait aussi la sous-chaîne "equipment").
         const isRealEquipment =
           data.placeholder !== true && String(data.type ?? '').toLowerCase().includes('equipment')
+        const isRoom = data.placeholder !== true && ['Room', 'Space'].includes(String(data.type ?? ''))
         if (isRealEquipment) {
           const renderedPosition = node.renderedPosition()
           setEquipmentPopup({
@@ -202,8 +331,19 @@ export default function BimGraphViewer({
             y: renderedPosition.y,
             label: String(data.label ?? data.name ?? node.id()),
           })
+          setRoomPopup(null)
+        } else if (isRoom) {
+          const renderedPosition = node.renderedPosition()
+          setRoomPopup({
+            nodeId: node.id(),
+            x: renderedPosition.x,
+            y: renderedPosition.y,
+            label: String(data.label ?? data.name ?? node.id()),
+          })
+          setEquipmentPopup(null)
         } else {
           setEquipmentPopup(null)
+          setRoomPopup(null)
         }
 
         if (data.placeholder === true) {
@@ -215,14 +355,33 @@ export default function BimGraphViewer({
             if (!expandedRef.current.has(node.id())) {
               try {
                 const rows = await getRoomEquipment(parentId)
+                const byCategory = new Map<string, CytoscapeElement['data'][]>()
                 for (const raw of rows) {
                   const parsed = parseArcadeNode((raw as Record<string, unknown>).node ?? raw)
                   if (!parsed || parsed.id === parentId) continue
+                  const key = parsed.category || 'autre'
+                  const bucket = byCategory.get(key)
+                  if (bucket) bucket.push(parsed)
+                  else byCategory.set(key, [parsed])
+                }
 
-                  if (cy.$id(parsed.id).empty()) cy.add(nodeElement(parsed))
+                for (const [category, nodes] of byCategory) {
+                  if (nodes.length > GROUP_THRESHOLD) {
+                    const labelPlural = EQUIPMENT_CATEGORY_LABELS[category] ?? `équipements (${category})`
+                    const placeholder = nodeGroupPlaceholder(parentId, `equipcat-${category}`, nodes.length, labelPlural)
+                    if (cy.$id(placeholder.data.id).empty()) {
+                      groupedChildrenRef.current.set(placeholder.data.id, nodes)
+                      cy.add(placeholder)
+                      cy.add(edgeElement(parentId, placeholder.data.id))
+                    }
+                    continue
+                  }
 
-                  const edgeId = `${parentId}-${parsed.id}`
-                  if (cy.$id(edgeId).empty()) cy.add(edgeElement(parentId, parsed.id))
+                  for (const parsed of nodes) {
+                    if (cy.$id(parsed.id).empty()) cy.add(nodeElement(parsed))
+                    const edgeId = `${parentId}-${parsed.id}`
+                    if (cy.$id(edgeId).empty()) cy.add(edgeElement(parentId, parsed.id))
+                  }
                 }
                 expandedRef.current.add(node.id())
                 node.remove()
@@ -234,6 +393,25 @@ export default function BimGraphViewer({
             return
           }
 
+          // Groupe Room/Space replié à l'expansion d'un nœud (voir
+          // GROUP_THRESHOLD) : le contenu est déjà en mémoire depuis le
+          // /graph/neighbors initial, pas de fetch supplémentaire ici.
+          if (data.context === 'node-group' && typeof data.parentId === 'string') {
+            const parentId = data.parentId
+            const nodes = groupedChildrenRef.current.get(node.id())
+            if (nodes) {
+              for (const parsed of nodes) {
+                if (cy.$id(parsed.id).empty()) cy.add(nodeElement(parsed))
+                const edgeId = `${parentId}-${parsed.id}`
+                if (cy.$id(edgeId).empty()) cy.add(edgeElement(parentId, parsed.id))
+              }
+              groupedChildrenRef.current.delete(node.id())
+              node.remove()
+              runLayout(cy)
+            }
+            return
+          }
+
           onPlaceholderClickRef.current?.(data)
           return
         }
@@ -241,10 +419,25 @@ export default function BimGraphViewer({
         if (!autoExpandOnClick) return
 
         const nodeId = data.id as string | undefined
-        if (!nodeId || expandedRef.current.has(nodeId)) return
+        if (!nodeId) return
+
+        if (expandedRef.current.has(nodeId)) {
+          // Ré-clic sur un nœud déjà déplié : bascule, le referme (retire
+          // ses enfants) sans toucher au reste du graphe -- pour rouvrir,
+          // recliquer dessus relance simplement un dépliage normal.
+          collapseSubtree(cy, nodeId, expandedRef, groupedChildrenRef)
+          // Une popup ouverte peut pointer sur un nœud qui vient de
+          // disparaître avec la branche refermée.
+          setEquipmentPopup((prev) => (prev && cy.getElementById(prev.nodeId).empty() ? null : prev))
+          setRoomPopup((prev) => (prev && cy.getElementById(prev.nodeId).empty() ? null : prev))
+          runLayout(cy)
+          return
+        }
 
         try {
           const rows = await getNodeChildren(nodeId)
+          const byType = new Map<string, CytoscapeElement['data'][]>()
+
           for (const row of rows) {
             const record = row as Record<string, unknown>
             const neighbors = record.neighbors ?? record.m ?? record.result ?? []
@@ -254,15 +447,17 @@ export default function BimGraphViewer({
               for (const neighbor of neighbors) {
                 const parsed = parseArcadeNode(neighbor)
                 if (!parsed || parsed.id === nodeId) continue
-
-                if (cy.$id(parsed.id).empty()) {
-                  cy.add(nodeElement(parsed))
-                }
-
-                const edgeId = `${nodeId}-${parsed.id}`
-                if (cy.$id(edgeId).empty()) {
-                  cy.add(edgeElement(nodeId, parsed.id))
-                }
+                // Le match backend (n)-[r]-(m) est NON ORIENTÉ : il renvoie
+                // aussi le PARENT du nœud qu'on déplie comme "voisin" (ex:
+                // Site en dépliant Building). Sans ce filtre, une arête
+                // supplémentaire Building->Site se rajoutait en double de
+                // celle déjà créée (Site->Building) au dépliage de Site. On
+                // saute tout voisin déjà relié à nodeId, peu importe le sens
+                // de l'arête existante.
+                if (cy.$id(nodeId).edgesWith(cy.$id(parsed.id)).length > 0) continue
+                const bucket = byType.get(parsed.type)
+                if (bucket) bucket.push(parsed)
+                else byType.set(parsed.type, [parsed])
               }
             }
 
@@ -272,6 +467,25 @@ export default function BimGraphViewer({
                 cy.add(placeholder)
                 cy.add(edgeElement(nodeId, placeholder.data.id))
               }
+            }
+          }
+
+          for (const [type, nodes] of byType) {
+            const labelPlural = GROUPABLE_TYPE_LABELS[type]
+            if (labelPlural && nodes.length > GROUP_THRESHOLD) {
+              const placeholder = nodeGroupPlaceholder(nodeId, type, nodes.length, labelPlural)
+              if (cy.$id(placeholder.data.id).empty()) {
+                groupedChildrenRef.current.set(placeholder.data.id, nodes)
+                cy.add(placeholder)
+                cy.add(edgeElement(nodeId, placeholder.data.id))
+              }
+              continue
+            }
+
+            for (const parsed of nodes) {
+              if (cy.$id(parsed.id).empty()) cy.add(nodeElement(parsed))
+              const edgeId = `${nodeId}-${parsed.id}`
+              if (cy.$id(edgeId).empty()) cy.add(edgeElement(nodeId, parsed.id))
             }
           }
 
@@ -288,6 +502,7 @@ export default function BimGraphViewer({
         if (event.target === cy) {
           cy.$('node:selected').unselect()
           setEquipmentPopup(null)
+          setRoomPopup(null)
         }
       })
 
@@ -302,6 +517,39 @@ export default function BimGraphViewer({
           const renderedPosition = target.renderedPosition()
           return { ...prev, x: renderedPosition.x, y: renderedPosition.y }
         })
+        setRoomPopup((prev) => {
+          if (!prev) return prev
+          const target = cy.getElementById(prev.nodeId)
+          if (target.empty()) return null
+          const renderedPosition = target.renderedPosition()
+          return { ...prev, x: renderedPosition.x, y: renderedPosition.y }
+        })
+      })
+
+      // Toute pièce/étage ajouté au graphe (chargement initial, dépliage
+      // d'un nœud, changement de `elements`...) déclenche immédiatement une
+      // vérification de sa température -- un seul listener couvre tous les
+      // points d'ajout (cy.add) plutôt que d'instrumenter chacun séparément.
+      // Floor est inclus en plus de Room/Space : sur les maquettes réelles
+      // testées, les capteurs de température sont souvent rattachés
+      // directement à l'étage (LOCATED_IN un Floor), pas à une pièce
+      // précise -- se limiter à Room laisserait la fonctionnalité inerte.
+      cy.on('add', 'node[type="Room"], node[type="Space"], node[type="Floor"]', (event) => {
+        refreshRoomTemperature(cy, event.target.id())
+      })
+
+      // Panneau "Contexte de pièces" (TypologyPanel.tsx, Mode Duo) : les
+      // nœuds Typology n'existent que dans CETTE instance Cytoscape, jamais
+      // dans la prop `elements` du parent -- recalcule la liste complète à
+      // chaque ajout/retrait pour rester exact (ex: un changement
+      // d'`elements` retire tout puis rajoute, 'remove' + 'add' se
+      // déclenchent l'un après l'autre, le résultat final reste correct).
+      cy.on('add remove', 'node[type="Typology"]', () => {
+        const typologies = cy.nodes('[type="Typology"]').map((node) => {
+          const data = node.data() as Record<string, unknown>
+          return { id: node.id(), label: String(data.label ?? data.name ?? node.id()) }
+        })
+        onTypologiesChangeRef.current?.(typologies)
       })
 
       cyRef.current = cy
@@ -323,10 +571,24 @@ export default function BimGraphViewer({
     })
     resizeObserver.observe(containerRef.current)
 
+    // Les pièces déjà présentes dans le graphe ne reçoivent pas d'autre
+    // déclencheur ('add' ne se répète pas pour un nœud déjà là) -- ce
+    // minuteur les revérifie périodiquement pour que la couleur suive une
+    // simulation qui continue de tourner après l'affichage initial.
+    const temperatureRefreshInterval = window.setInterval(() => {
+      const cy = cyRef.current
+      if (!cy) return
+      cy.nodes('[type="Room"], [type="Space"], [type="Floor"]').forEach((node) => {
+        refreshRoomTemperature(cy, node.id())
+      })
+    }, ROOM_TEMPERATURE_REFRESH_MS)
+
     return () => {
       cancelled = true
+      window.clearInterval(temperatureRefreshInterval)
       resizeObserver.disconnect()
       expandedRef.current.clear()
+      groupedChildrenRef.current.clear()
       if (cyRef.current) {
         try {
           cyRef.current.destroy()
@@ -345,11 +607,27 @@ export default function BimGraphViewer({
     cy.elements().remove()
     cy.add(toElementDefinitions(elements))
     expandedRef.current.clear()
+    groupedChildrenRef.current.clear()
     // Le nœud décrit par une popup ouverte vient d'être retiré du canvas :
     // la garder affichée pointerait sur un élément qui n'existe plus.
     setEquipmentPopup(null)
+    setRoomPopup(null)
     runLayout(cy)
   }, [elements])
+
+  // Sélection croisée (Mode Duo) : un élément cliqué en 3D fournit un
+  // GlobalId -- sélectionne le nœud correspondant s'il est déjà présent
+  // dans le graphe affiché et recentre la vue dessus (animation légère,
+  // cohérente avec runLayout qui anime aussi ses recadrages).
+  useEffect(() => {
+    const cy = cyRef.current
+    if (!cy || !focusNodeId) return
+    const node = cy.getElementById(focusNodeId)
+    if (node.empty()) return
+    cy.$('node:selected').unselect()
+    node.select()
+    cy.animate({ center: { eles: node } }, { duration: 300 })
+  }, [focusNodeId])
 
   const zoomBy = (factor: number) => {
     const cy = cyRef.current
@@ -423,6 +701,16 @@ export default function BimGraphViewer({
           x={equipmentPopup.x}
           y={equipmentPopup.y}
           onClose={() => setEquipmentPopup(null)}
+        />
+      )}
+      {roomPopup && (
+        <RoomTelemetryPopup
+          key={roomPopup.nodeId}
+          roomId={roomPopup.nodeId}
+          label={roomPopup.label}
+          x={roomPopup.x}
+          y={roomPopup.y}
+          onClose={() => setRoomPopup(null)}
         />
       )}
     </div>

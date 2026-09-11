@@ -16,9 +16,32 @@ NOTES / PRÉREQUIS:
   - Utilisé par database.py et main.py pour la création et la requête de la structure des données métier.
 """
 
-from sqlalchemy import Column, String, ARRAY
+import uuid
+
+from sqlalchemy import Column, String, ARRAY, DateTime, func
+from sqlalchemy.dialects.postgresql import JSONB
 # Remplacer "from .database import Base" par :
 from database import Base
+
+
+class CockpitModel(Base):
+    """Composition de cockpit sauvegardée (bibliothèque BOS Exécution) --
+    voir web-app-execution/frontend-client/.../features/cockpits/ pour le
+    schéma JSON exact de `composition`. PK en hex UUID (pas de convention
+    UUID/int déjà établie dans ce fichier -- id="A"/"B"/"C" pour PhaseModel
+    n'a de sens que pour des phases fixes en petit nombre, pas ici)."""
+    __tablename__ = "cockpits"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex)
+    owner_username = Column(String, nullable=False, index=True)  # preferred_username Keycloak (voir security.get_current_user)
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    category = Column(String, nullable=True)  # texte libre (Énergie/Occupation/Confort/...), jamais un Enum figé -- extensible sans migration
+    tags = Column(ARRAY(String), default=list)
+    composition = Column(JSONB, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
 
 class PhaseModel(Base):
     __tablename__ = "phases"

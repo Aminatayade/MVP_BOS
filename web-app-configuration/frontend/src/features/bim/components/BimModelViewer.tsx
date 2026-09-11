@@ -14,7 +14,21 @@ import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import * as OBC from '@thatopen/components'
 import type { FragmentsModel, RaycastResult } from '@thatopen/fragments'
-import { downloadModelBytes, getFloorRooms, getFloors, type ModelSource, type RoomOption } from '../services/arcadeApi'
+import {
+  downloadModelBytes,
+  formatMetricValue,
+  getBuildingsList,
+  getFloorEquipment,
+  getFloorRooms,
+  getFloors,
+  truncateLabel,
+  type BuildingOption,
+  type FloorOption,
+  type ModelSource,
+  type RoomOption,
+} from '../services/arcadeApi'
+import MetricHistoryPanel from './MetricHistoryPanel'
+import { useEquipmentTelemetry } from '../hooks/useEquipmentTelemetry'
 
 type Props = {
   sources: ModelSource[]
@@ -22,12 +36,36 @@ type Props = {
   // immersion. Sans zone, la liste d'étages n'est simplement pas filtrée.
   zone?: string
   height?: string | number
+  // Sélection croisée avec le graphe (Mode Duo, voir BimExplorer.tsx) :
+  // remonte le GlobalId + type IFC (via item.getCategory()) cliqué en 3D au
+  // parent...
+  onElementSelect?: (globalId: string, ifcType: string) => void
+  // ...et reçoit en retour l'élément sélectionné côté graphe (id + type
+  // Cytoscape, ex: "Floor"/"Room"/"Equipment") pour réagir différemment
+  // selon le type : un Floor déclenche le même plan 2D découpé que le flux
+  // "Immersion -> Choisir un étage", les autres types un simple recadrage
+  // caméra (voir l'effet plus bas).
+  focusElement?: { id: string; type: string } | null
+  // Bouton "Coloriser en 3D" de TypologyPanel (Mode Duo) : GlobalId des
+  // pièces à peindre + couleur choisie par l'utilisateur (pas de couleur
+  // fixe imposée ici). `null` = efface la coloration active.
+  colorGroup?: { ids: string[]; color: string } | null
 }
 
 type LoadedModel = {
   discipline: string
   model: FragmentsModel
 }
+
+// NB : filtrer côté client sur item.getCategory() (essayé précédemment) n'est
+// pas fiable -- getCategory() échoue ou renvoie une catégorie vide/générique
+// sur une part significative des éléments réels (cf. commentaire plus bas,
+// "getCategory()/getAttributes() échouaient..."), y compris de vrais
+// équipements : ça masquait la popup d'équipements légitimes. Le filtrage
+// "pas de télémétrie -> pas d'erreur" se fait donc côté résultat (le 404
+// "introuvable dans le graphe" est traité comme un état normal, voir
+// getEquipmentSummary dans arcadeApi.ts), pas en bloquant l'ouverture de la
+// popup elle-même.
 
 // POC point 7 de la roadmap (Paul) : référence de l'élément 3D cliqué, pas
 // encore reliée à des données temps réel -- juste ce que l'utilisateur a
@@ -53,7 +91,14 @@ const MOVEMENT_KEYS = new Set([
 ])
 const MOVE_SPEED = 3 // unités de scène (~mètres) par seconde
 
-export default function BimModelViewer({ sources, zone, height = '600px' }: Props) {
+export default function BimModelViewer({
+  sources,
+  zone,
+  height = '600px',
+  onElementSelect,
+  focusElement,
+  colorGroup,
+}: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const componentsRef = useRef<OBC.Components | null>(null)
   const worldRef = useRef<OBC.SimpleWorld<OBC.SimpleScene, OBC.OrthoPerspectiveCamera, OBC.SimpleRenderer> | null>(null)
@@ -64,6 +109,13 @@ export default function BimModelViewer({ sources, zone, height = '600px' }: Prop
   const [visibleDisciplines, setVisibleDisciplines] = useState<Set<string>>(new Set())
   const [status, setStatus] = useState('Initialisation du moteur 3D…')
   const [selected, setSelected] = useState<SelectedElement | null>(null)
+  // Miroir de `selected.guid`, lu (pas juste écrit) par l'effet de sélection
+  // croisée ci-dessous pour distinguer un focusGlobalId venu du GRAPHE d'un
+  // simple écho du clic 3D qui vient d'ouvrir cette même popup (voir plus
+  // bas -- sans cette distinction, cliquer un équipement en 3D se
+  // fermait/rouvrait sa propre popup en boucle).
+  const selectedGuidRef = useRef<string | null>(null)
+  selectedGuidRef.current = selected?.guid ?? null
   const [navMode, setNavMode] = useState<'Orbit' | 'FirstPerson'>('Orbit')
   const pressedKeysRef = useRef<Set<string>>(new Set())
   // Position de la souris, normalisée (-1..1) par rapport au centre de la
@@ -84,11 +136,19 @@ export default function BimModelViewer({ sources, zone, height = '600px' }: Prop
   // l'étage choisi vue du dessus (fitToBox) -- cliquer dedans réutilise le
   // même raycast que la popup d'info pour savoir sur quelle pièce on a
   // cliqué, puis téléporte à l'intérieur en immersion.
-  type TeleportStep = 'choice' | 'floor' | 'plan'
+  // Étape "building" : une zone peut contenir PLUSIEURS bâtiments (une
+  // maquette par discipline, chacune avec son propre GlobalId IFC -- ex:
+  // AO+AP) -- sans ce choix préalable, la grille d'étages mélangeait les
+  // niveaux de bâtiments différents dans une seule liste (bug remonté par
+  // l'utilisateur). Insérée uniquement quand la zone compte >1 bâtiment ;
+  // sinon on passe directement à 'floor' comme avant.
+  type TeleportStep = 'choice' | 'building' | 'floor' | 'plan'
   type RoomWithBox = RoomOption & { box: THREE.Box3 }
   const [showTeleportPicker, setShowTeleportPicker] = useState(false)
   const [teleportStep, setTeleportStep] = useState<TeleportStep>('choice')
-  const [teleportFloors, setTeleportFloors] = useState<{ global_id: string; name?: string }[]>([])
+  const [teleportFloors, setTeleportFloors] = useState<FloorOption[]>([])
+  const [teleportBuildings, setTeleportBuildings] = useState<BuildingOption[]>([])
+  const [teleportBuildingId, setTeleportBuildingId] = useState<string | null>(null)
   const [teleportFloorsLoading, setTeleportFloorsLoading] = useState(false)
   const [planRoomsLoading, setPlanRoomsLoading] = useState(false)
   const [teleportError, setTeleportError] = useState('')
@@ -341,18 +401,56 @@ export default function BimModelViewer({ sources, zone, height = '600px' }: Prop
     setTeleportError('')
   }
 
+  // Choisit l'étape suivante ('building' ou 'floor' directement) selon le
+  // nombre de bâtiments distincts parmi les étages déjà résolus pour cette
+  // zone -- appelé après le premier chargement ET à chaque réouverture (le
+  // cache `teleportFloors` peut dater d'une zone/maquette différente).
+  const routeToBuildingOrFloorStep = (floors: FloorOption[], buildings: BuildingOption[]) => {
+    const buildingIds = Array.from(new Set(floors.map((f) => f.buildingId).filter((id): id is string => !!id)))
+    if (buildingIds.length > 1) {
+      setTeleportBuildings(buildings.filter((b) => buildingIds.includes(b.global_id)))
+      setTeleportBuildingId(null)
+      setTeleportStep('building')
+    } else {
+      setTeleportBuildingId(buildingIds[0] ?? null)
+      setTeleportStep('floor')
+    }
+  }
+
   const openTeleportPicker = async () => {
-    setTeleportStep('floor')
     setTeleportError('')
-    if (teleportFloors.length > 0) return
+    if (teleportFloors.length > 0) {
+      routeToBuildingOrFloorStep(teleportFloors, teleportBuildings)
+      return
+    }
     setTeleportFloorsLoading(true)
     try {
-      const all = await getFloors()
-      setTeleportFloors(zone ? all.filter((f) => f.zone === zone) : all)
+      const [all, buildings] = await Promise.all([getFloors(), getBuildingsList(zone)])
+      const zoneFloors = zone ? all.filter((f) => f.zone === zone) : all
+      setTeleportFloors(zoneFloors)
+      routeToBuildingOrFloorStep(zoneFloors, buildings)
     } catch (error) {
       setTeleportError(error instanceof Error ? error.message : 'Erreur de chargement des étages')
+      setTeleportStep('floor')
     } finally {
       setTeleportFloorsLoading(false)
+    }
+  }
+
+  const selectTeleportBuilding = (buildingId: string) => {
+    setTeleportBuildingId(buildingId)
+    setTeleportStep('floor')
+  }
+
+  // Repli identique à celui du clic dans le graphe (voir l'effet
+  // `focusElement` ci-dessous) : si l'étage choisi n'a aucun IfcSpace, on ne
+  // laisse pas l'utilisateur bloqué sur un message d'erreur -- on ferme le
+  // sélecteur et on recadre au moins la caméra sur l'étage visé.
+  const handleFloorCardClick = async (floorId: string) => {
+    const opened = await selectTeleportFloor(floorId)
+    if (!opened) {
+      setShowTeleportPicker(false)
+      await fitCameraToFloor(floorId)
     }
   }
 
@@ -410,11 +508,83 @@ export default function BimModelViewer({ sources, zone, height = '600px' }: Prop
     }
   }
 
-  const selectTeleportFloor = async (floorId: string) => {
+  // Recadre la caméra sur la boîte englobante d'UN élément (pas de
+  // changement de mode caméra ni de projection) -- repli générique utilisé
+  // à la fois par la sélection croisée du graphe et par la grille d'étages
+  // manuelle quand le plan 2D est impossible (aucun IfcSpace dans le
+  // fichier) : plutôt qu'un écran bloqué sur un message d'erreur, on montre
+  // au moins l'étage visé en 3D.
+  const fitCameraToGlobalId = async (globalId: string) => {
+    const world = worldRef.current
+    if (!world) return
+    for (const { model } of loadedRef.current) {
+      try {
+        const [localId] = await model.getLocalIdsByGuids([globalId])
+        if (localId === null || localId === undefined) continue
+        const [box] = await model.getBoxes([localId])
+        if (!box || box.isEmpty() || !Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) {
+          // eslint-disable-next-line no-console
+          console.warn('[Bim3D:focus] boîte englobante invalide/vide, recadrage annulé', globalId, box)
+          return
+        }
+        // `false` (pas de transition animée) : un survol animé de longue
+        // distance (ex: depuis une vue immersive proche d'un mur) peut
+        // faire traverser des murs à la caméra en plein vol, ce qui
+        // produit un écran noir transitoire (near-clipping) -- un saut
+        // instantané, comme la téléportation du plan 2D d'étage, évite ça.
+        await world.camera.controls.fitToBox(box, false)
+        return
+      } catch (error) {
+        // eslint-disable-next-line no-console
+        console.warn('[Bim3D:focus] échec sur un modèle, on essaie le suivant', error)
+        continue
+      }
+    }
+    // eslint-disable-next-line no-console
+    console.warn('[Bim3D:focus] GlobalId introuvable dans les modèles chargés', globalId)
+  }
+
+  // Repli spécifique à un étage SANS pièce (aucun IfcSpace) : un
+  // IfcBuildingStorey n'a généralement aucune géométrie propre, donc
+  // `fitCameraToGlobalId(floorId)` ne trouve rien à cadrer. On recadre à la
+  // place sur l'UNION des boîtes englobantes de son équipement (qui, lui, a
+  // une géométrie réelle) -- même motif de résolution GUID->localId->box que
+  // `selectTeleportFloor` pour les pièces. Repli sur `fitCameraToGlobalId`
+  // en dernier recours si l'étage n'a vraiment aucun équipement localisable.
+  const fitCameraToFloor = async (floorId: string) => {
+    const world = worldRef.current
+    if (!world) return
+    try {
+      const equipment = await getFloorEquipment(floorId, zone)
+      if (equipment.length > 0) {
+        const guids = equipment.map((e) => e.global_id)
+        for (const { model } of loadedRef.current) {
+          const localIds = await model.getLocalIdsByGuids(guids)
+          const resolvedIds = localIds.filter((id): id is number => id !== null && id !== undefined)
+          if (resolvedIds.length === 0) continue
+          const boxes = (await model.getBoxes(resolvedIds)).filter(
+            (b) => b && !b.isEmpty() && Number.isFinite(b.min.x) && Number.isFinite(b.max.x),
+          )
+          if (boxes.length === 0) continue
+          const unionBox = boxes[0].clone()
+          for (const b of boxes.slice(1)) unionBox.union(b)
+          await world.camera.controls.fitToBox(unionBox, false)
+          return
+        }
+      }
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn('[Bim3D:focus] échec de résolution de l\'équipement de l\'étage', error)
+    }
+    // Dernier recours : la géométrie du floor lui-même, s'il en a une.
+    await fitCameraToGlobalId(floorId)
+  }
+
+  const selectTeleportFloor = async (floorId: string): Promise<boolean> => {
     setTeleportError('')
     setPlanRoomsLoading(true)
     try {
-      const rooms = await getFloorRooms(floorId)
+      const rooms = await getFloorRooms(floorId, zone)
       if (rooms.length === 0) {
         // Vide explicitement l'état du plan précédent : sans ça, la vue 3D
         // gardait le découpage du dernier étage affiché avec succès, donnant
@@ -424,7 +594,7 @@ export default function BimModelViewer({ sources, zone, height = '600px' }: Prop
         clipperRef.current?.deleteAll()
         setTeleportStep('floor')
         setTeleportError('Aucune pièce trouvée pour cet étage (le fichier IFC ne contient aucun IfcSpace).')
-        return
+        return false
       }
       // Une pièce n'a pas de position 3D dans le graphe (ArcadeDB ne stocke
       // que du relationnel) -- on la retrouve par GUID dans la maquette IFC
@@ -443,13 +613,15 @@ export default function BimModelViewer({ sources, zone, height = '600px' }: Prop
       }
       if (resolved.length === 0) {
         setTeleportError('Impossible de localiser les pièces de cet étage dans la maquette 3D chargée.')
-        return
+        return false
       }
       planRoomsRef.current = resolved
       await showFloorPlan(resolved)
       setTeleportStep('plan')
+      return true
     } catch (error) {
       setTeleportError(error instanceof Error ? error.message : 'Erreur de chargement des pièces')
+      return false
     } finally {
       setPlanRoomsLoading(false)
     }
@@ -608,6 +780,142 @@ export default function BimModelViewer({ sources, zone, height = '600px' }: Prop
     return () => cancelAnimationFrame(raf)
   }, [navMode])
 
+  // Sélection croisée (Mode Duo) : un clic dans le GRAPHE fournit un
+  // GlobalId, ici on le résout en élément 3D et on recadre la caméra dessus
+  // -- sans changer de mode caméra (Orbit/FirstPerson) ni de projection,
+  // juste fitToBox comme le bouton "Recentrer", mais sur la boîte englobante
+  // du SEUL élément visé plutôt que la scène entière.
+  useEffect(() => {
+    if (!focusElement) return
+    // Écho du clic 3D qui vient d'ouvrir sa propre popup (onElementSelect
+    // fait remonter le même GlobalId au parent, qui le renvoie ici tel
+    // quel) -- ne RIEN faire : la popup est déjà ouverte et la caméra déjà
+    // sur cet élément, retraiter fermerait la popup qu'on vient d'ouvrir.
+    if (focusElement.id === selectedGuidRef.current) return
+    let cancelled = false
+    const { id: focusGlobalId, type: focusType } = focusElement
+
+    const focus = async () => {
+      const world = worldRef.current
+      if (!world) return
+      // Ferme une éventuelle popup de fiche IFC laissée par un clic 3D
+      // précédent -- elle décrirait un élément différent de celui qu'on
+      // recadre maintenant depuis le graphe.
+      setSelected(null)
+
+      // Un Floor cliqué dans le graphe donne le MÊME découpage en plan 2D
+      // que le flux "Immersion -> Choisir un étage" (demandé -- sinon
+      // cliquer "Level 1"/"Roof" ne faisait qu'un recadrage caméra
+      // générique, moins utile que la vraie vue de plan). `teleportStep`
+      // mis à 'floor' avant l'appel : si selectTeleportFloor (async) prend
+      // un instant, l'écran intermédiaire visible est la grille des étages
+      // (avec son propre indicateur de chargement), pas l'écran de choix
+      // Orbite/Première personne qui n'a pas de sens ici.
+      //
+      // Repli sur le recadrage caméra générique (comme tout autre type de
+      // nœud) si le plan 2D échoue -- typiquement une maquette industrielle
+      // sans aucun IfcSpace (0 pièce) : sans ce repli, le clic n'affichait
+      // qu'une modale bloquée sur un message d'erreur, sans jamais recadrer
+      // sur l'étage lui-même.
+      if (focusType === 'Floor') {
+        setShowTeleportPicker(true)
+        setTeleportStep('floor')
+        // Résout le bâtiment de CET étage pour scoper la grille sur le même
+        // bâtiment -- sans ça, un `teleportBuildingId` mis en cache par un
+        // clic manuel précédent (bouton Immersion) pouvait rester sur un
+        // AUTRE bâtiment de la même zone, affichant des étages qui n'ont
+        // rien à voir avec celui cliqué dans le graphe (bug remonté par
+        // l'utilisateur : niveaux d'un autre bâtiment mélangés à la liste).
+        try {
+          let floors = teleportFloors
+          if (floors.length === 0) {
+            const all = await getFloors()
+            floors = zone ? all.filter((f) => f.zone === zone) : all
+            if (!cancelled) setTeleportFloors(floors)
+          }
+          if (!cancelled) {
+            setTeleportBuildingId(floors.find((f) => f.global_id === focusGlobalId)?.buildingId ?? null)
+          }
+        } catch (error) {
+          // eslint-disable-next-line no-console
+          console.warn('[Bim3D:focus] résolution du bâtiment de l\'étage échouée', error)
+        }
+        const opened = await selectTeleportFloor(focusGlobalId)
+        if (cancelled) return
+        if (!opened) {
+          setShowTeleportPicker(false)
+          await fitCameraToFloor(focusGlobalId)
+        }
+        return
+      }
+
+      await fitCameraToGlobalId(focusGlobalId)
+    }
+
+    focus()
+    return () => {
+      cancelled = true
+    }
+  }, [focusElement])
+
+  // "Coloriser en 3D" (Mode Duo, TypologyPanel.tsx) : peint la géométrie des
+  // pièces d'un groupe avec la couleur choisie par l'utilisateur (pas de
+  // couleur imposée -- chaque typologie a son propre sélecteur, voir
+  // TypologyPanel). `setColor`/`resetColor` existent nativement sur
+  // FragmentsModel, aucune dépendance supplémentaire. Le ref garde la trace
+  // de CE QUI a été peint pour pouvoir l'effacer avant d'appliquer un
+  // nouveau groupe/couleur (sinon une ancienne coloration resterait visible
+  // en plus de la nouvelle).
+  const coloredRef = useRef<{ model: FragmentsModel; localIds: number[] }[]>([])
+  useEffect(() => {
+    let cancelled = false
+
+    const applyColor = async () => {
+      // Efface systématiquement la coloration précédente avant d'appliquer
+      // la nouvelle (ou de ne rien appliquer, si colorGroup est vide/null).
+      const previous = coloredRef.current
+      coloredRef.current = []
+      for (const { model, localIds } of previous) {
+        try {
+          await model.resetColor(localIds)
+        } catch {
+          // modèle déchargé entre-temps -- rien à nettoyer
+        }
+      }
+
+      if (!colorGroup || colorGroup.ids.length === 0) return
+      const threeColor = new THREE.Color(colorGroup.color)
+
+      for (const { model } of loadedRef.current) {
+        try {
+          const localIds = (await model.getLocalIdsByGuids(colorGroup.ids)).filter(
+            (id): id is number => id !== null && id !== undefined,
+          )
+          if (cancelled || localIds.length === 0) continue
+          await model.setColor(localIds, threeColor)
+          coloredRef.current.push({ model, localIds })
+        } catch (error) {
+          // eslint-disable-next-line no-console
+          console.warn('[Bim3D:color] échec sur un modèle, on essaie le suivant', error)
+        }
+      }
+    }
+
+    applyColor()
+    return () => {
+      cancelled = true
+    }
+  }, [colorGroup])
+
+  // Même hook que la popup temps réel du graphe (EquipmentTelemetryPopup) --
+  // ici la clé de recherche est le GlobalId lu en 3D (item.getGuid())
+  // plutôt que l'id de nœud Cytoscape. La plupart des clics 3D ne tombent
+  // PAS sur un Equipment (murs, dalles, portes...), d'où le filtre sur
+  // 'Inconnu' : pas la peine de tenter un fetch/WebSocket voués à un 404.
+  const { metrics: selectedMetrics, error: selectedMetricsError } = useEquipmentTelemetry(
+    selected && selected.guid !== 'Inconnu' ? selected.guid : null,
+  )
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (navMode !== 'FirstPerson') return
     if (event.code === 'Escape') {
@@ -740,6 +1048,9 @@ export default function BimModelViewer({ sources, zone, height = '600px' }: Prop
       // eslint-disable-next-line no-console
       console.log('[Bim3D:clic] 4/4 affichage de la popup', selection)
       setSelected(selection)
+      // Sélection croisée (Mode Duo) : un GlobalId "Inconnu" (getGuid() en
+      // échec) n'a pas d'équivalent identifiable côté graphe, ne rien remonter.
+      if (guid) onElementSelect?.(guid, category || '')
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error('[Bim3D:clic] ÉCHEC INATTENDU (hors des points surveillés ci-dessus)', error)
@@ -865,14 +1176,19 @@ export default function BimModelViewer({ sources, zone, height = '600px' }: Prop
             border: '1px solid #334155',
             borderRadius: 8,
             padding: '10px 12px',
-            maxWidth: 260,
+            width: 260,
+            boxSizing: 'border-box',
+            maxHeight: '70vh',
+            overflowY: 'auto',
             color: '#e2e8f0',
             fontSize: 12.5,
             zIndex: 5,
           }}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-            <strong style={{ fontSize: 13 }}>{selected.name || 'Élément'}</strong>
+            <strong style={{ fontSize: 13 }} title={selected.name}>
+              {selected.name ? truncateLabel(selected.name) : 'Élément'}
+            </strong>
             <button
               type="button"
               onClick={() => setSelected(null)}
@@ -883,8 +1199,32 @@ export default function BimModelViewer({ sources, zone, height = '600px' }: Prop
           </div>
           <div style={{ color: '#94a3b8' }}>Type IFC</div>
           <div style={{ marginBottom: 6 }}>{selected.category || '—'}</div>
-          <div style={{ color: '#94a3b8' }}>Global ID</div>
-          <div style={{ wordBreak: 'break-all' }}>{selected.guid}</div>
+
+          <div style={{ borderTop: '1px solid #334155', paddingTop: 6, color: '#94a3b8' }}>
+            Télémétrie live
+          </div>
+          {selectedMetricsError && (
+            <div style={{ color: '#f87171', marginTop: 2 }}>{selectedMetricsError}</div>
+          )}
+          {!selectedMetricsError && selectedMetrics === null && (
+            <div style={{ color: '#94a3b8', marginTop: 2 }}>Chargement…</div>
+          )}
+          {!selectedMetricsError && selectedMetrics !== null && selectedMetrics.length === 0 && (
+            <div style={{ color: '#94a3b8', marginTop: 2 }}>Aucune télémétrie pour cet élément.</div>
+          )}
+          {!selectedMetricsError && selectedMetrics !== null && selectedMetrics.length > 0 && (
+            <div style={{ marginTop: 2, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {selectedMetrics.map((m) => (
+                <div key={m.metric} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                    <span>{m.metric}</span>
+                    <span>{formatMetricValue(m)}</span>
+                  </div>
+                  <MetricHistoryPanel metric={m} />
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -943,6 +1283,54 @@ export default function BimModelViewer({ sources, zone, height = '600px' }: Prop
         </div>
       )}
 
+      {showTeleportPicker && teleportStep === 'building' && (
+        <div
+          style={{
+            position: 'absolute', inset: 0, background: 'rgba(11, 17, 32, 0.88)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10,
+          }}
+        >
+          <div
+            style={{
+              background: '#1f2937', border: '1px solid #334155', borderRadius: 10,
+              padding: 18, width: 340, maxHeight: '80%', overflowY: 'auto', color: '#e2e8f0',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <strong style={{ fontSize: 14 }}>Choisir un bâtiment</strong>
+              <button
+                type="button"
+                onClick={closeTeleportPicker}
+                style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}
+              >
+                ✕
+              </button>
+            </div>
+            <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 4, marginBottom: 14 }}>
+              Cette zone contient plusieurs bâtiments (une maquette par discipline) : choisissez-en un
+              pour voir uniquement ses propres étages.
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              {teleportBuildings.map((building) => (
+                <button
+                  key={building.global_id}
+                  type="button"
+                  onClick={() => selectTeleportBuilding(building.global_id)}
+                  style={{
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                    gap: 6, padding: '14px 8px', borderRadius: 8, border: '1px solid #334155',
+                    background: '#111827', color: '#e2e8f0', cursor: 'pointer', fontSize: 12.5,
+                  }}
+                >
+                  <span style={{ fontSize: 20 }}>🏗️</span>
+                  {building.name || building.global_id}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {showTeleportPicker && teleportStep === 'floor' && (
         <div
           style={{
@@ -966,34 +1354,56 @@ export default function BimModelViewer({ sources, zone, height = '600px' }: Prop
                 ✕
               </button>
             </div>
+            {teleportBuildings.length > 1 && (
+              <button
+                type="button"
+                onClick={() => setTeleportStep('building')}
+                style={{
+                  background: 'none', border: 'none', color: '#60a5fa', cursor: 'pointer',
+                  fontSize: 11.5, padding: 0, marginBottom: 8,
+                }}
+              >
+                ← Changer de bâtiment
+              </button>
+            )}
             <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 4, marginBottom: 14 }}>
               L'étage choisi s'ouvrira en plan 2D : cliquez ensuite directement sur la pièce où entrer.
             </p>
 
-            {teleportFloorsLoading ? (
-              <span style={{ fontSize: 12.5 }}>Chargement…</span>
-            ) : teleportFloors.length === 0 ? (
-              <span style={{ fontSize: 12, color: '#94a3b8' }}>Aucun étage trouvé pour cette zone.</span>
-            ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                {teleportFloors.map((floor) => (
-                  <button
-                    key={floor.global_id}
-                    type="button"
-                    disabled={planRoomsLoading}
-                    onClick={() => selectTeleportFloor(floor.global_id)}
-                    style={{
-                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                      gap: 6, padding: '14px 8px', borderRadius: 8, border: '1px solid #334155',
-                      background: '#111827', color: '#e2e8f0', cursor: planRoomsLoading ? 'wait' : 'pointer', fontSize: 12.5,
-                    }}
-                  >
-                    <span style={{ fontSize: 20 }}>🏢</span>
-                    {floor.name || floor.global_id}
-                  </button>
-                ))}
-              </div>
-            )}
+            {(() => {
+              // Scopé au bâtiment choisi (ou résolu automatiquement pour un
+              // clic venant du graphe) -- jamais la liste brute de la zone,
+              // qui mélangerait les étages de plusieurs bâtiments distincts.
+              const visibleFloors = teleportBuildingId
+                ? teleportFloors.filter((f) => f.buildingId === teleportBuildingId)
+                : teleportFloors
+              if (teleportFloorsLoading) {
+                return <span style={{ fontSize: 12.5 }}>Chargement…</span>
+              }
+              if (visibleFloors.length === 0) {
+                return <span style={{ fontSize: 12, color: '#94a3b8' }}>Aucun étage trouvé pour ce bâtiment.</span>
+              }
+              return (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  {visibleFloors.map((floor) => (
+                    <button
+                      key={floor.global_id}
+                      type="button"
+                      disabled={planRoomsLoading}
+                      onClick={() => handleFloorCardClick(floor.global_id)}
+                      style={{
+                        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                        gap: 6, padding: '14px 8px', borderRadius: 8, border: '1px solid #334155',
+                        background: '#111827', color: '#e2e8f0', cursor: planRoomsLoading ? 'wait' : 'pointer', fontSize: 12.5,
+                      }}
+                    >
+                      <span style={{ fontSize: 20 }}>🏢</span>
+                      {floor.name || floor.global_id}
+                    </button>
+                  ))}
+                </div>
+              )
+            })()}
             {planRoomsLoading && (
               <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 12 }}>Préparation du plan…</p>
             )}

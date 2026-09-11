@@ -6,11 +6,21 @@
  *              rôle du Configurateur. Si aucune maquette n'a encore été
  *              ingérée pour la zone saisie, l'état vide l'explique
  *              clairement plutôt que d'afficher une erreur.
+ *
+ * Le module énergie n'est plus un panneau fixe ("Consommation électrique")
+ * mais un système à deux écrans -- bibliothèque de cockpits (CockpitLibrary)
+ * et constructeur composable (CockpitBuilder), voir features/cockpits/.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import BimModelViewer from './components/BimModelViewer'
-import { getModelSources, type ModelSource } from './services/arcadeApi'
+import { getBuildingGlobalId, getModelSources, type ModelSource } from './services/arcadeApi'
+import CockpitLibrary from '../cockpits/CockpitLibrary'
+import CockpitBuilder from '../cockpits/CockpitBuilder'
+import { defaultComposition, type CockpitComposition, type CockpitMeta } from '../cockpits/types'
+import keycloak from '../../services/keycloak'
+
+type EnergyView = 'library' | 'builder'
 
 export default function BimViewer() {
   const [zone, setZone] = useState('')
@@ -18,6 +28,13 @@ export default function BimViewer() {
   const [sources, setSources] = useState<ModelSource[]>([])
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(false)
+
+  const [buildingId, setBuildingId] = useState<string | null>(null)
+  const [energyView, setEnergyView] = useState<EnergyView>('library')
+  const [builderSeed, setBuilderSeed] = useState<{ composition: CockpitComposition; meta?: CockpitMeta } | null>(null)
+
+  const currentUsername = keycloak.tokenParsed?.preferred_username as string | undefined
+  const buildingLabel = loadedZone ?? ''
 
   const openZone = async () => {
     const trimmed = zone.trim()
@@ -42,6 +59,19 @@ export default function BimViewer() {
       setLoading(false)
     }
   }
+
+  // Le module énergie a besoin du Building de la zone, indépendamment de la
+  // présence d'une maquette 3D (aucune maquette IFC n'empêche d'avoir déjà
+  // un graphe/de la télémétrie ingérés pour cette zone).
+  useEffect(() => {
+    setBuildingId(null)
+    setEnergyView('library')
+    setBuilderSeed(null)
+    if (!loadedZone) return
+    getBuildingGlobalId(loadedZone)
+      .then(setBuildingId)
+      .catch(() => setBuildingId(null))
+  }, [loadedZone])
 
   return (
     <div className="panel" style={{ marginTop: 24 }}>
@@ -75,6 +105,29 @@ export default function BimViewer() {
         <div style={{ marginTop: 10 }}>
           <BimModelViewer sources={sources} height="480px" />
         </div>
+      )}
+
+      {loadedZone && buildingId && energyView === 'library' && (
+        <CockpitLibrary
+          buildingId={buildingId}
+          buildingLabel={buildingLabel}
+          currentUsername={currentUsername}
+          onOpenCockpit={(composition, meta) => { setBuilderSeed({ composition, meta }); setEnergyView('builder') }}
+          onCreateNew={() => { setBuilderSeed({ composition: defaultComposition('batiment', [buildingId], buildingLabel) }); setEnergyView('builder') }}
+        />
+      )}
+
+      {loadedZone && buildingId && energyView === 'builder' && builderSeed && (
+        <CockpitBuilder
+          zone={loadedZone}
+          buildingId={buildingId}
+          buildingLabel={buildingLabel}
+          seed={builderSeed.composition}
+          seedMeta={builderSeed.meta}
+          currentUsername={currentUsername}
+          onBack={() => setEnergyView('library')}
+          onSaved={() => setEnergyView('library')}
+        />
       )}
     </div>
   )

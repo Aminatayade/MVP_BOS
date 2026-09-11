@@ -74,3 +74,50 @@ class JsonRulesRepositoryAdapter(ComplianceRulesRepositoryPort):
         return self._discipline_config(discipline).get(
             "required_spatial_elements", ["IfcBuilding", "IfcBuildingStorey"]
         )
+
+    def canonical_disciplines(self, disciplines: list[str]) -> list[str]:
+        """Résout chaque discipline (alias inclus), dédoublonne, trie pour la
+        déterminisme de l'étiquette combinée et de l'ordre de traitement."""
+        return sorted({self.canonical_discipline(d) for d in disciplines})
+
+    def is_spatial_backbone_disciplines(self, disciplines: list[str]) -> bool:
+        """Vrai si AU MOINS UNE des disciplines assignées construit le
+        backbone spatial -- ex: un fichier CVC+STRUCTURE doit construire le
+        backbone."""
+        return any(self.is_spatial_backbone_discipline(d) for d in disciplines)
+
+    def get_business_critical_types_union(self, disciplines: list[str]) -> list[str]:
+        """Union dédoublonnée des types critiques de toutes les disciplines
+        -- un fichier CVC+ELEC+PLOMBERIE est vérifié sur les 3 jeux de types
+        à la fois, pas seulement un sous-ensemble arbitraire."""
+        seen: list[str] = []
+        for d in disciplines:
+            for t in self.get_business_critical_types(d):
+                if t not in seen:
+                    seen.append(t)
+        return seen
+
+    def get_required_property_sets_union(self, disciplines: list[str]) -> dict:
+        """Union par type IFC des Pset requis -- si deux disciplines
+        exigent des Pset différents sur le MÊME type IFC, les deux jeux
+        d'exigences s'appliquent (union des listes, pas écrasement)."""
+        merged: dict[str, list[str]] = {}
+        for d in disciplines:
+            for ifc_type, psets in self.get_required_property_sets(d).items():
+                bucket = merged.setdefault(ifc_type, [])
+                for p in psets:
+                    if p not in bucket:
+                        bucket.append(p)
+        return merged
+
+    def get_required_spatial_elements_union(self, disciplines: list[str]) -> list[str]:
+        """Union -- le fichier doit satisfaire l'exigence spatiale la plus
+        stricte parmi ses disciplines assignées (ex: PLOMBERIE exige
+        IfcSite seul, CVC exige Building+Storey -- combinés, les deux sont
+        requis)."""
+        seen: list[str] = []
+        for d in disciplines:
+            for e in self.get_required_spatial_elements(d):
+                if e not in seen:
+                    seen.append(e)
+        return seen

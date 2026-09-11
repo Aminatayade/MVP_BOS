@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from adapters.arcadedb_ts_adapter import ArcadeDbTimeseriesAdapter
 from adapters.nats_adapter import NatsJetStreamAdapter
 from application.timeseries_ingestion_service import TimeseriesIngestionService
+from infrastructure.secrets import read_secret
 
 DEFAULT_SUBJECT = "bos.timeseries.>"
 STARTUP_MAX_ATTEMPTS = 12
@@ -37,10 +38,10 @@ def run_consumer() -> None:
     base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
     database = os.environ.get("ARCADEDB_DATABASE", "bim")
     username = os.environ.get("ARCADEDB_USERNAME", "root")
-    password = os.environ.get("ARCADEDB_PASSWORD", "testBIM123")
+    password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
     nats_servers = os.environ.get("NATS_URL", "nats://localhost:4222")
     nats_user = os.environ.get("NATS_USER", "bos_admin")
-    nats_password = os.environ.get("NATS_PASSWORD", "testBIM123")
+    nats_password = read_secret("NATS_PASSWORD", "testBIM123")
     subject = os.environ.get("BOS_TIMESERIES_SUBJECT", DEFAULT_SUBJECT)
 
     repository = ArcadeDbTimeseriesAdapter(

@@ -12,6 +12,34 @@ from .entities import BimElement, SpatialStructureSummary, ModelUnits, Validatio
 GUID_EXPECTED_LENGTH = 22
 ACCEPTED_LENGTH_UNITS = {"METRE", "MILLIMETRE", "CENTIMETRE", "FOOT"}
 
+# Convention de nommage IFC standard pour les sous-types "à représentation
+# géométrique prédéfinie" (IfcWallStandardCase, IfcSlabElementedCase...) :
+# un même élément métier (mur, dalle, poteau...) peut être déclaré sous l'un
+# ou l'autre selon l'outil d'export -- Revit exporte typiquement TOUS ses
+# murs "simples" en IfcWallStandardCase plutôt qu'en IfcWall nu. La charte
+# BIM référence toujours le type DE BASE ("IfcWall"), jamais ces variantes.
+_IFC_SUBTYPE_SUFFIXES = ("StandardCase", "ElementedCase", "PredefinedCase")
+
+
+def _required_property_sets_for(ifc_type: str, required_psets_by_type: dict[str, list[str]]) -> list[str]:
+    """Résout les Pset requis pour un élément, en retombant sur le type de
+    base si l'élément est déclaré sous une variante StandardCase/
+    ElementedCase de ce type -- sans ce repli, un fichier qui exporte ses
+    murs en IfcWallStandardCase (très courant, ex: Revit) échappait
+    SILENCIEUSEMENT à l'exigence Pset_WallCommon.FireRating : constaté sur
+    une vraie maquette où 1065 murs sur 1080 n'étaient jamais vérifiés,
+    seuls les 15 déclarés IfcWall "nu" l'étaient."""
+    required = required_psets_by_type.get(ifc_type)
+    if required:
+        return required
+    for suffix in _IFC_SUBTYPE_SUFFIXES:
+        if ifc_type.endswith(suffix):
+            base_type = ifc_type[: -len(suffix)]
+            required = required_psets_by_type.get(base_type)
+            if required:
+                return required
+    return []
+
 
 def check_valid_guid_format(elements: list[BimElement]) -> list[ValidationIssue]:
     issues = []
@@ -133,7 +161,7 @@ def check_required_property_sets(
     """
     issues = []
     for el in elements:
-        required = required_psets_by_type.get(el.ifc_type, [])
+        required = _required_property_sets_for(el.ifc_type, required_psets_by_type)
         for requirement in required:
             pset_name, _, attr_name = requirement.partition(".")
             pset = el.property_sets.get(pset_name)
@@ -150,12 +178,22 @@ def check_required_property_sets(
 
 
 def check_geometry_presence(elements: list[BimElement]) -> list[ValidationIssue]:
-    """Vérifie que les éléments métier ont au moins une géométrie exploitable pour le rendu 3D."""
+    """Vérifie que les éléments métier ont au moins une géométrie exploitable pour le rendu 3D.
+
+    WARNING, pas ERROR : sur une vraie maquette client de plusieurs centaines
+    d'éléments, un ou deux éléments fantômes sans Representation (reliquat
+    d'export Revit/Tekla non purgé) sont courants et ne remettent pas en
+    cause la conformité de l'ensemble -- une seule ERROR aurait rejeté tout
+    le fichier (validation "tout ou rien", voir bim_validator_service.py),
+    perdant des centaines d'éléments par ailleurs sains pour UN élément
+    cassé. L'élément concerné reste signalé dans le rapport et ne sera
+    simplement pas rendu en 3D, plutôt que de bloquer toute l'ingestion.
+    """
     issues = []
     for el in elements:
         if not getattr(el, "has_geometry", False):
             issues.append(ValidationIssue(
-                severity=Severity.ERROR,
+                severity=Severity.WARNING,
                 code="MISSING_GEOMETRY",
                 message=f"Élément [{el.ifc_type}] {el.global_id} : aucune géométrie exploitable détectée, "
                         f"ce qui empêche son rendu 3D dans un moteur IFC."

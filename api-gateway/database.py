@@ -29,14 +29,28 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
+from secrets_util import read_secret
+
 # -----------------------------------------------------------------------------
 # CHAÎNE DE CONNEXION À LA BDD MÉTIER
-# Priorité à la variable d'environnement Docker. Fallback sur le réseau Docker inter-conteneurs.
+# DATABASE_URL reste une échappatoire explicite (connexion non standard), mais
+# n'est plus la voie normale : embarquer le mot de passe DANS l'URL le rend
+# visible en clair via `docker inspect` sur la variable d'environnement
+# entière. Par défaut, l'URL est reconstruite à partir de ses parties, avec
+# le mot de passe lu via read_secret() (fichier de secret Docker en
+# priorité, voir secrets_util.py) -- inchangé pour qui ne configure pas de
+# secret Docker.
 # -----------------------------------------------------------------------------
-SQLALCHEMY_DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://bos_app_user:bos_app_password@postgres-app:5432/bos_app_db"
-)
+_explicit_database_url = os.getenv("DATABASE_URL")
+if _explicit_database_url:
+    SQLALCHEMY_DATABASE_URL = _explicit_database_url
+else:
+    _pg_user = os.getenv("POSTGRES_APP_USER", "bos_app_user")
+    _pg_password = read_secret("POSTGRES_APP_PASSWORD", "bos_app_password")
+    _pg_host = os.getenv("POSTGRES_APP_HOST", "postgres-app")
+    _pg_port = os.getenv("POSTGRES_APP_PORT", "5432")
+    _pg_db = os.getenv("POSTGRES_APP_DB", "bos_app_db")
+    SQLALCHEMY_DATABASE_URL = f"postgresql://{_pg_user}:{_pg_password}@{_pg_host}:{_pg_port}/{_pg_db}"
 
 # -----------------------------------------------------------------------------
 # INITIALISATION DE SQLALCHEMY

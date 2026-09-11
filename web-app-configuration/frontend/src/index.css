@@ -672,6 +672,8 @@ select.input {
 .equipment-popup {
   z-index: 20;
   width: 220px;
+  max-height: 70vh;
+  overflow-y: auto;
   background: #1f2937;
   border: 1px solid #334155;
   border-radius: 10px;
@@ -728,7 +730,13 @@ select.input {
 .equipment-popup__metrics {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
+}
+
+.equipment-popup__metric-block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
 .equipment-popup__metric {

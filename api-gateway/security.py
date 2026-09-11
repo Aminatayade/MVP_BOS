@@ -38,18 +38,57 @@ ALLOWED_ROLES = {"Administrateur", "Configurateur"}
 EXECUTION_ALLOWED_ROLES = {"Administrateur", "Configurateur", "Client"}
 
 
-def get_current_user_roles(token: str = Depends(oauth2_scheme)) -> list:
+def decode_token_payload(token: str) -> dict:
     """
     Décode le token JWT émis par Keycloak, récupère les clés JWKS via le réseau
-    interne Docker, valide la signature et extrait les rôles de l'utilisateur.
+    interne Docker et valide la signature -- factorisé hors de
+    decode_roles_from_token() pour être réutilisé aussi par get_current_user()
+    (bibliothèque de cockpits, BOS Exécution) sans dupliquer l'appel JWKS.
+    """
+    jwks_url = f"{KEYCLOAK_INTERNAL_URL}/protocol/openid-connect/certs"
+    jwks = requests.get(jwks_url).json()
+    return jwt.decode(token, jwks, algorithms=["RS256"], options={"verify_aud": False})
+
+
+def decode_roles_from_token(token: str) -> list:
+    """
+    Extrait les rôles Keycloak d'un token déjà validé par decode_token_payload().
+
+    Extrait de get_current_user_roles() pour être réutilisable hors du flux
+    FastAPI Depends(oauth2_scheme) -- notamment pour l'authentification
+    WebSocket (voir ws_equipment_telemetry dans bim_proxy.py), où le
+    navigateur ne peut pas poser de header Authorization sur la requête de
+    handshake : le token y arrive en paramètre de requête, pas en header.
+    """
+    return decode_token_payload(token).get("realm_access", {}).get("roles", [])
+
+
+def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
+    """
+    Identité de l'utilisateur courant (pas seulement ses rôles) -- nécessaire
+    pour attribuer un cockpit sauvegardé à son créateur et distinguer "mes
+    cockpits" de "partagés par l'équipe" (aucune route existante avant la
+    bibliothèque de cockpits n'avait besoin de savoir QUI fait la requête,
+    seulement quels rôles elle porte).
     """
     try:
-        jwks_url = f"{KEYCLOAK_INTERNAL_URL}/protocol/openid-connect/certs"
-        jwks = requests.get(jwks_url).json()
+        payload = decode_token_payload(token)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Jeton d'authentification invalide : {str(e)}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    username = payload.get("preferred_username")
+    if not username:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Jeton sans preferred_username.")
+    return {"username": username, "sub": payload.get("sub")}
 
-        payload = jwt.decode(token, jwks, algorithms=["RS256"], options={"verify_aud": False})
-        roles = payload.get("realm_access", {}).get("roles", [])
-        return roles
+
+def get_current_user_roles(token: str = Depends(oauth2_scheme)) -> list:
+    """Dépendance FastAPI (routes HTTP classiques, header Authorization)."""
+    try:
+        return decode_roles_from_token(token)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

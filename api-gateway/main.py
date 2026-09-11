@@ -20,15 +20,18 @@ DEPENDENCIES:
   - fastapi, uvicorn, sqlalchemy, httpx (via bim_proxy), python-jose (via security)
 """
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 # Imports des modules BDD et modèles locaux
 from database import engine, get_db, Base
-from models import PhaseModel
+from models import PhaseModel, CockpitModel
+from schemas import CockpitIn
 import bim_proxy
-from security import verify_allowed_roles, verify_execution_allowed_roles
+import nats_bridge
+import aggregation_bridge
+from security import get_current_user, verify_allowed_roles, verify_execution_allowed_roles
 
 # Génération / Vérification de la présence des tables en BDD au démarrage
 Base.metadata.create_all(bind=engine)
@@ -56,6 +59,32 @@ app.add_middleware(
 # Dépendances RBAC (JWT Keycloak) : voir security.py — extrait de ce fichier
 # pour être réutilisable par bim_proxy.py sans import circulaire.
 app.include_router(bim_proxy.router)
+
+
+@app.on_event("startup")
+async def _start_nats_bridge() -> None:
+    # Best-effort : NATS peut ne pas être prêt au tout premier démarrage
+    # (ordre de dépendances Docker Compose) -- ne pas empêcher la gateway de
+    # démarrer pour autant, le rafraîchissement temps réel des popups de
+    # télémétrie est une amélioration, pas une fonctionnalité bloquante.
+    try:
+        await nats_bridge.start()
+    except Exception as exc:
+        print(f"⚠️  Pont NATS->WebSocket indisponible au démarrage : {exc}")
+        return
+
+    # aggregation_bridge dépend de la connexion déjà ouverte par
+    # nats_bridge.start() ci-dessus -- ne tenter que si celui-ci a réussi.
+    try:
+        await aggregation_bridge.start()
+    except Exception as exc:
+        print(f"⚠️  Pont NATS->agrégation cockpit indisponible au démarrage : {exc}")
+
+
+@app.on_event("shutdown")
+async def _stop_nats_bridge() -> None:
+    await aggregation_bridge.stop()
+    await nats_bridge.stop()
 
 
 @app.get("/")
@@ -132,5 +161,73 @@ def read_phases(
         db.add_all(default_phases)
         db.commit()
         phases = db.query(PhaseModel).all()
-        
+
     return phases
+
+# ---------------------------------------------------------------------------
+# BIBLIOTHÈQUE DE COCKPITS (BOS Exécution) -- compositions de widgets
+# sauvegardées par les utilisateurs. verify_execution_allowed_roles (pas
+# verify_allowed_roles) : le rôle Client doit pouvoir créer/posséder ses
+# propres cockpits, c'est le cœur de la fonctionnalité.
+# ---------------------------------------------------------------------------
+@app.get("/api/v1/cockpits")
+def list_cockpits(
+    db: Session = Depends(get_db),
+    roles: list = Depends(verify_execution_allowed_roles),
+):
+    """Renvoie TOUS les cockpits visibles (mes cockpits + partagés par
+    l'équipe) -- le tri "Mes cockpits"/"Partagés" se fait côté frontend en
+    comparant owner_username à l'utilisateur courant, pas de filtre serveur
+    (pas de notion de cockpit privé/non partagé dans ce modèle)."""
+    return db.query(CockpitModel).order_by(CockpitModel.updated_at.desc()).all()
+
+
+@app.post("/api/v1/cockpits")
+def create_cockpit(
+    body: CockpitIn,
+    db: Session = Depends(get_db),
+    roles: list = Depends(verify_execution_allowed_roles),
+    user: dict = Depends(get_current_user),
+):
+    cockpit = CockpitModel(owner_username=user["username"], **body.dict())
+    db.add(cockpit)
+    db.commit()
+    db.refresh(cockpit)
+    return cockpit
+
+
+@app.put("/api/v1/cockpits/{cockpit_id}")
+def update_cockpit(
+    cockpit_id: str,
+    body: CockpitIn,
+    db: Session = Depends(get_db),
+    roles: list = Depends(verify_execution_allowed_roles),
+    user: dict = Depends(get_current_user),
+):
+    cockpit = db.query(CockpitModel).filter(CockpitModel.id == cockpit_id).first()
+    if not cockpit:
+        raise HTTPException(status_code=404, detail="Cockpit introuvable.")
+    if cockpit.owner_username != user["username"]:
+        raise HTTPException(status_code=403, detail="Seul le créateur peut modifier ce cockpit.")
+    for key, value in body.dict().items():
+        setattr(cockpit, key, value)
+    db.commit()
+    db.refresh(cockpit)
+    return cockpit
+
+
+@app.delete("/api/v1/cockpits/{cockpit_id}")
+def delete_cockpit(
+    cockpit_id: str,
+    db: Session = Depends(get_db),
+    roles: list = Depends(verify_execution_allowed_roles),
+    user: dict = Depends(get_current_user),
+):
+    cockpit = db.query(CockpitModel).filter(CockpitModel.id == cockpit_id).first()
+    if not cockpit:
+        raise HTTPException(status_code=404, detail="Cockpit introuvable.")
+    if cockpit.owner_username != user["username"]:
+        raise HTTPException(status_code=403, detail="Seul le créateur peut supprimer ce cockpit.")
+    db.delete(cockpit)
+    db.commit()
+    return {"ok": True}

@@ -36,10 +36,15 @@ services:
     image: postgres:16-alpine
     container_name: bos_postgres
     restart: always
+    # POSTGRES_PASSWORD_FILE : support natif de l'image officielle postgres
+    # (lit le mot de passe depuis un fichier plutôt qu'une variable
+    # d'environnement en clair, invisible via `docker inspect`).
+    secrets:
+      - postgres_password
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-bos_db}
       POSTGRES_USER: ${POSTGRES_USER:-bos_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Définir POSTGRES_PASSWORD dans .env}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     ports:
       - "5432:5432"
     volumes:
@@ -54,10 +59,14 @@ services:
     image: postgres:16-alpine
     container_name: bos_postgres_app
     restart: always
+    secrets:
+      - postgres_app_password
     environment:
       POSTGRES_DB: ${POSTGRES_APP_DB:-bos_app_db}
       POSTGRES_USER: ${POSTGRES_APP_USER:-bos_app_user}
-      POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:?Définir POSTGRES_APP_PASSWORD dans .env}
+      # Voir le commentaire sur le service `postgres` ci-dessus -- même
+      # conflit avec la clé héritée de docker-compose.yml (base).
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_app_password
     ports:
       - "5433:5432"
     volumes:
@@ -79,6 +88,11 @@ services:
     # automatiquement bos-realm (rôles + utilisateurs de test) au premier
     # démarrage, sans reconfiguration manuelle de Keycloak.
     command: start-dev --import-realm
+    # Docker secrets NON appliqué ici, volontairement : testé, Keycloak 24
+    # rejette KC_DB_PASSWORD_FILE ("no password was provided" -- le support
+    # `_FILE` annoncé pour Quarkus ne couvre pas cette variable sur cette
+    # version). Retour à la variable d'environnement classique, fail-closed
+    # (${...:?...}) -- même limitation que le service `nats` plus bas.
     environment:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-bos_db}
@@ -109,18 +123,42 @@ services:
     restart: always
     ports:
       - "8000:8000"
+    # DATABASE_URL retiré : embarquer le mot de passe DANS l'URL le rendait
+    # visible en clair sur CETTE variable via `docker inspect`, même avec un
+    # secret Docker ailleurs. database.py reconstruit l'URL à partir des
+    # parties + POSTGRES_APP_PASSWORD (lu via secrets_util.read_secret,
+    # fichier de secret en priorité) -- voir api-gateway/database.py.
+    secrets:
+      - postgres_app_password
+      - nats_password
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_APP_USER:-bos_app_user}:${POSTGRES_APP_PASSWORD:?Définir POSTGRES_APP_PASSWORD dans .env}@postgres-app:5432/${POSTGRES_APP_DB:-bos_app_db}
-      - KEYCLOAK_INTERNAL_URL=http://keycloak:8080/realms/bos-realm
-      - KEYCLOAK_EXTERNAL_URL=http://localhost:8080/realms/bos-realm
-      - BIM_API_INTERNAL_URL=http://bim_api:8000
-      - TIMESERIES_API_INTERNAL_URL=http://timeseries_api:8001
+      # `null` : retire la clé DATABASE_URL héritée de docker-compose.yml
+      # (base, mot de passe en clair dans l'URL) -- sinon database.py la
+      # trouverait via os.getenv("DATABASE_URL") et l'utiliserait EN
+      # PRIORITÉ (c'est l'échappatoire voulue), ignorant silencieusement
+      # toute la reconstruction sécurisée ci-dessous. Même mécanisme de
+      # fusion par clé que POSTGRES_PASSWORD sur le service `postgres`.
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-bos_app_user}
+      POSTGRES_APP_PASSWORD_FILE: /run/secrets/postgres_app_password
+      POSTGRES_APP_HOST: postgres-app
+      POSTGRES_APP_DB: ${POSTGRES_APP_DB:-bos_app_db}
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080/realms/bos-realm
+      KEYCLOAK_EXTERNAL_URL: http://localhost:8080/realms/bos-realm
+      BIM_API_INTERNAL_URL: http://bim_api:8000
+      TIMESERIES_API_INTERNAL_URL: http://timeseries_api:8001
+      # Pont NATS->WebSocket (nats_bridge.py) pour le rafraîchissement temps
+      # réel des popups de télémétrie -- mêmes identifiants que bim_api/
+      # timeseries_api, la gateway n'écrit rien, elle écoute seulement.
+      NATS_URL: nats://nats:4222
+      NATS_USER: ${NATS_USER:-bos_admin}
+      NATS_PASSWORD_FILE: /run/secrets/nats_password
     depends_on:
       - keycloak
       - postgres
       - postgres-app
       - bim_api
       - timeseries_api
+      - nats
     networks:
       - fusion_network
 
@@ -168,6 +206,10 @@ services:
       VITE_KEYCLOAK_REALM: bos-realm
       VITE_KEYCLOAK_CLIENT_ID: web-app-client
       VITE_API_GATEWAY_URL: http://localhost:8000
+      # Widget "Consommation électrique" (popup historique Grafana, iframe
+      # kiosk) -- même raisonnement que le service "frontend" : le navigateur
+      # contacte Grafana directement, pas via l'API Gateway.
+      VITE_GRAFANA_URL: http://localhost:3000
     ports:
       - "5174:5173"
     depends_on:
@@ -189,6 +231,20 @@ services:
     restart: always
     environment:
       - JAVA_OPTS=-Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:?Définir ARCADEDB_PASSWORD dans .env} -Darcadedb.server.plugins=OpenCypher
+      # ARCADEDB_OPTS_MEMORY (variable dédiée du script de démarrage de
+      # l'image, appliquée APRÈS JAVA_OPTS donc prioritaire dessus) : sans
+      # elle, la JVM se limite par défaut à ~25% de la RAM du conteneur
+      # qu'elle détecte AU DÉMARRAGE (visible comme "MAXRAM=2.00GB" dans les
+      # logs) -- une maquette volumineuse (ex: ~20 000 équipements dans une
+      # même zone) peut alors provoquer un OutOfMemoryError: Java heap space
+      # même quand le conteneur a, lui, largement assez de mémoire
+      # disponible. Remonté de 4G à 6G : un nouveau OutOfMemoryError: Java
+      # heap space constaté à 4G avec le jeu de données accumulé (zone Bati6,
+      # ~6000 équipements + tout leur historique simulé) -- 6G laisse encore
+      # de la marge pour bim_api et les autres services sur les 8 Go alloués
+      # à Docker Desktop (usage observé des autres conteneurs : quelques
+      # centaines de Mo au total).
+      - ARCADEDB_OPTS_MEMORY=-Xms1G -Xmx6G
     volumes:
       # Sans ceci, chaque recréation du conteneur (rebuild, redémarrage machine)
       # repartait d'une base vide : les maquettes déjà ingérées disparaissaient.
@@ -210,6 +266,13 @@ services:
     image: nats@sha256:026a66a4497c6d7d3eed741781770099c48c755bf3a55b6950d76dd210596eb3
     container_name: bos_nats
     restart: always
+    # Docker secrets NON appliqué ici, volontairement : cette image officielle
+    # n'embarque AUCUN shell (`/bin/sh` absent -- vérifié, le conteneur refuse
+    # de démarrer avec un entrypoint shell), donc pas moyen d'y lire un
+    # fichier de secret au démarrage sans changer d'image de base. Le mot de
+    # passe reste en variable d'environnement fail-closed (${...:?...}) --
+    # seul le réseau Docker interne y a accès, pas de port NATS exposé hors
+    # du port applicatif 4222 nécessaire aux autres services.
     command: "-js -m 8222 --user ${NATS_USER:-bos_admin} --pass ${NATS_PASSWORD:?Définir NATS_PASSWORD dans .env}"
     ports:
       - "4222:4222"
@@ -255,21 +318,27 @@ services:
       - seaweedfs
       - nats
       - grafana
+    # _FILE : lu par infrastructure/secrets.py:read_secret() (bim_validator),
+    # pas un support natif de l'image ici -- c'est du code applicatif à nous.
+    secrets:
+      - arcadedb_password
+      - nats_password
+      - grafana_admin_password
     environment:
       - SEAWEEDFS_MASTER_URL=http://seaweedfs:9333
       - ARCADEDB_BASE_URL=http://arcadedb:2480
       - ARCADEDB_DATABASE=bim
       - ARCADEDB_USERNAME=root
-      - ARCADEDB_PASSWORD=${ARCADEDB_PASSWORD:?Définir ARCADEDB_PASSWORD dans .env}
+      - ARCADEDB_PASSWORD_FILE=/run/secrets/arcadedb_password
       - NATS_URL=nats://nats:4222
       - NATS_USER=${NATS_USER:-bos_admin}
-      - NATS_PASSWORD=${NATS_PASSWORD:?Définir NATS_PASSWORD dans .env}
+      - NATS_PASSWORD_FILE=/run/secrets/nats_password
       # bim_api parle à Grafana via le réseau Docker interne (nom de service),
       # contrairement au frontend qui le contacte depuis le navigateur via
       # localhost:3000 -- ne pas confondre les deux URLs.
       - GRAFANA_URL=http://grafana:3000
       - GRAFANA_ADMIN_USER=admin
-      - GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Définir GRAFANA_ADMIN_PASSWORD dans .env}
+      - GRAFANA_ADMIN_PASSWORD_FILE=/run/secrets/grafana_admin_password
     # Pas de "ports:" : uniquement joignable via le réseau Docker interne
     # (résolution DNS "bim_api"), donc uniquement via l'API Gateway.
     entrypoint: ["python", "api_server.py"]
@@ -288,14 +357,17 @@ services:
     depends_on:
       - arcadedb
       - nats
+    secrets:
+      - arcadedb_password
+      - nats_password
     environment:
       - ARCADEDB_BASE_URL=http://arcadedb:2480
       - ARCADEDB_DATABASE=bim
       - ARCADEDB_USERNAME=root
-      - ARCADEDB_PASSWORD=${ARCADEDB_PASSWORD:?Définir ARCADEDB_PASSWORD dans .env}
+      - ARCADEDB_PASSWORD_FILE=/run/secrets/arcadedb_password
       - NATS_URL=nats://nats:4222
       - NATS_USER=${NATS_USER:-bos_admin}
-      - NATS_PASSWORD=${NATS_PASSWORD:?Définir NATS_PASSWORD dans .env}
+      - NATS_PASSWORD_FILE=/run/secrets/nats_password
     # Pas de "ports:" : idem bim_api, joignable uniquement via le réseau interne.
     entrypoint: ["uvicorn", "timeseries_api:app", "--host", "0.0.0.0", "--port", "8001"]
     networks:
@@ -311,15 +383,18 @@ services:
     image: ghcr.io/devoptim-bos/bos-light-bim-validator:${APP_VERSION:-dev}
     container_name: bos_bim_validator
     profiles: ["tools"]
+    secrets:
+      - arcadedb_password
+      - nats_password
     environment:
       - SEAWEEDFS_MASTER_URL=http://seaweedfs:9333
       - ARCADEDB_BASE_URL=http://arcadedb:2480
       - ARCADEDB_DATABASE=bim
       - ARCADEDB_USERNAME=root
-      - ARCADEDB_PASSWORD=${ARCADEDB_PASSWORD:?Définir ARCADEDB_PASSWORD dans .env}
+      - ARCADEDB_PASSWORD_FILE=/run/secrets/arcadedb_password
       - NATS_URL=nats://nats:4222
       - NATS_USER=${NATS_USER:-bos_admin}
-      - NATS_PASSWORD=${NATS_PASSWORD:?Définir NATS_PASSWORD dans .env}
+      - NATS_PASSWORD_FILE=/run/secrets/nats_password
     volumes:
       - ./bim_validator/maquettes:/app/maquettes
     networks:
@@ -337,9 +412,14 @@ services:
     image: grafana/grafana-oss:latest
     container_name: bos_grafana
     restart: always
+    # GF_SECURITY_ADMIN_PASSWORD__FILE : Grafana supporte nativement le
+    # suffixe `__FILE` (double underscore, sa convention à lui) sur N'IMPORTE
+    # QUELLE variable GF_* -- même bénéfice que POSTGRES_PASSWORD_FILE.
+    secrets:
+      - grafana_admin_password
     environment:
       - GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Définir GRAFANA_ADMIN_PASSWORD dans .env}
+      - GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/grafana_admin_password
       # Sans ça, Grafana refuse d'être chargé dans un <iframe> (en-tête
       # X-Frame-Options par défaut) -- indispensable pour l'embed kiosk.
       - GF_SECURITY_ALLOW_EMBEDDING=true
@@ -370,3 +450,25 @@ volumes:
   postgres_app_data:
   arcadedb_data:
   grafana_data:
+
+# -----------------------------------------------------------------------------
+# SECRETS DOCKER -- un fichier en clair par mot de passe (jamais committé,
+# voir .gitignore et secrets/README.md), monté en lecture seule dans les
+# conteneurs à /run/secrets/<nom> au lieu de passer par une variable
+# d'environnement classique (visible en clair via `docker inspect`).
+# Premier démarrage : copier chaque secrets/*.txt.example vers *.txt (sans
+# l'extension .example) et y mettre de vrais mots de passe.
+# -----------------------------------------------------------------------------
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  postgres_app_password:
+    file: ./secrets/postgres_app_password.txt
+  keycloak_admin_password:
+    file: ./secrets/keycloak_admin_password.txt
+  arcadedb_password:
+    file: ./secrets/arcadedb_password.txt
+  nats_password:
+    file: ./secrets/nats_password.txt
+  grafana_admin_password:
+    file: ./secrets/grafana_admin_password.txt

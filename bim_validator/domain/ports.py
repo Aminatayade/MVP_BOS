@@ -271,5 +271,5 @@ class GrafanaDashboardSyncPort(ABC):
     l'implémentation de garantir un succès."""
 
     @abstractmethod
-    def sync_variables(self) -> None:
+    def sync_variables(self, *, zone: str = "") -> None:
         raise NotImplementedError

@@ -65,9 +65,9 @@ Realm `bos-realm`, deux clients OIDC distincts (un par frontend) : `web-app-fron
 
 | Rôle | BOS Configurateur | BOS Exécution | API config/BIM (écriture + lecture complète) | API exécution (lecture 3D seule) |
 | :--- | :--- | :--- | :--- | :--- |
-| Administrateur | ✅ | ✅ | ✅ | ✅ |
-| Configurateur | ✅ | ✅ | ✅ | ✅ |
-| Client | ❌ 403 | ✅ | ❌ 403 | ✅ |
+| Administrateur ||
+| Configurateur ||
+| Client |  403 |  |  403 | |
 
 Le RBAC est appliqué **route par route** dans `api-gateway/bim_proxy.py` (pas une seule
 dépendance globale sur le routeur) : chaque route déclare explicitement

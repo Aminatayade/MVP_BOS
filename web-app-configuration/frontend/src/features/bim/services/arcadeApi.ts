@@ -20,8 +20,14 @@ function unwrapArcadeResult(payload: Record<string, unknown>): any[] {
 }
 
 function extractErrorMessage(error: unknown, fallback: string): string {
-  const anyError = error as { response?: { data?: { error?: string } }; message?: string }
-  return anyError.response?.data?.error || anyError.message || fallback
+  // `error` : forme des erreurs bim_api/timeseries_api (http.server maison).
+  // `detail` : forme par défaut de FastAPI (HTTPException) -- api-gateway et
+  // timeseries_api sont FastAPI, donc un 404/422 renvoie `{"detail": "..."}`,
+  // pas `{"error": "..."}` (sans ce fallback, ces messages n'étaient jamais
+  // affichés et on retombait sur le générique axios "Request failed with
+  // status code 404").
+  const anyError = error as { response?: { data?: { error?: string; detail?: string } }; message?: string }
+  return anyError.response?.data?.error || anyError.response?.data?.detail || anyError.message || fallback
 }
 
 export async function getNodeChildren(nodeId: string) {
@@ -30,6 +36,29 @@ export async function getNodeChildren(nodeId: string) {
     return unwrapArcadeResult(resp.data)
   } catch (error) {
     throw new Error(extractErrorMessage(error, 'ArcadeDB query failed'))
+  }
+}
+
+/**
+ * Moyenne agrégée d'une métrique pour TOUS les équipements rattachés à un
+ * Room/Floor (voir /graph/location-readings côté backend -- même route
+ * utilisée par les panels Grafana de l'onglet Supervision). Utilisé ici pour
+ * détecter une pièce en surchauffe (voir BimGraphViewer.tsx) : `readings`
+ * est trié chronologiquement croissant, le dernier élément est donc la
+ * valeur la plus récente.
+ */
+export async function getLocationReadings(
+  locationId: string,
+  metric: string,
+  bucketSeconds = 3600,
+): Promise<{ value: number; ts: string }[]> {
+  try {
+    const resp = await apiClient.get('/api/bim/graph/location-readings', {
+      params: { global_id: locationId, metric, bucket_seconds: bucketSeconds },
+    })
+    return (resp.data.readings ?? []) as { value: number; ts: string }[]
+  } catch (error) {
+    throw new Error(extractErrorMessage(error, 'Failed to fetch location readings'))
   }
 }
 
@@ -51,12 +80,20 @@ export async function getRootContexts() {
   }
 }
 
-export async function getFloors(): Promise<{ global_id: string; name?: string; zone?: string }[]> {
+export interface FloorOption {
+  global_id: string
+  name?: string
+  zone?: string
+  buildingId?: string
+}
+
+export async function getFloors(): Promise<FloorOption[]> {
   const rows = await getRootContexts()
-  const floors: { global_id: string; name?: string; zone?: string }[] = []
+  const floors: FloorOption[] = []
 
   for (const row of rows) {
-    const candidate = (row as Record<string, unknown>).f ?? (row as Record<string, unknown>).floor ?? row
+    const rowRecord = row as Record<string, unknown>
+    const candidate = rowRecord.f ?? rowRecord.floor ?? row
     const attrs =
       ((candidate as Record<string, unknown>).attributes as Record<string, unknown> | undefined) ??
       (candidate as Record<string, unknown>)
@@ -66,11 +103,36 @@ export async function getFloors(): Promise<{ global_id: string; name?: string; z
         global_id: globalId,
         name: attrs.name as string | undefined,
         zone: attrs.zone as string | undefined,
+        buildingId: rowRecord.building_id as string | undefined,
       })
     }
   }
 
   return floors
+}
+
+export interface BuildingOption {
+  global_id: string
+  name?: string
+}
+
+/** Liste des bâtiments d'une zone -- alimente l'étape "Choisir un bâtiment"
+ * du sélecteur d'Immersion quand une zone en contient plusieurs (une
+ * maquette par discipline, chacune avec son propre Building/GlobalId IFC). */
+export async function getBuildingsList(zone?: string): Promise<BuildingOption[]> {
+  const rows = await getBuildings(zone)
+  const buildings: BuildingOption[] = []
+  for (const row of rows) {
+    const candidate = (row as Record<string, unknown>).b ?? (row as Record<string, unknown>).building ?? row
+    const attrs =
+      ((candidate as Record<string, unknown>).attributes as Record<string, unknown> | undefined) ??
+      (candidate as Record<string, unknown>)
+    const globalId = attrs.global_id as string | undefined
+    if (globalId) {
+      buildings.push({ global_id: globalId, name: attrs.name as string | undefined })
+    }
+  }
+  return buildings
 }
 
 export interface RoomOption {
@@ -79,8 +141,8 @@ export interface RoomOption {
 }
 
 /** Pièces d'un étage donné, pour le sélecteur de téléportation en immersion 3D. */
-export async function getFloorRooms(floorId: string): Promise<RoomOption[]> {
-  const rows = await getFloorView(floorId)
+export async function getFloorRooms(floorId: string, zone?: string): Promise<RoomOption[]> {
+  const rows = await getFloorView(floorId, zone)
   const roomOptions: RoomOption[] = []
   for (const row of rows) {
     const roomRows = (row as Record<string, unknown>).rooms
@@ -93,9 +155,28 @@ export async function getFloorRooms(floorId: string): Promise<RoomOption[]> {
   return roomOptions
 }
 
-export async function getFloorView(floorId: string) {
+/** Équipements d'un étage donné (rattachés à une pièce OU directement à
+ * l'étage) -- utilisé en repli caméra quand l'étage n'a aucune pièce : un
+ * IfcBuildingStorey n'a généralement pas de géométrie propre, donc recadrer
+ * sur SA boîte englobante ne donne rien ; on recadre plutôt sur l'ensemble
+ * de son équipement, qui lui a une géométrie réelle. */
+export async function getFloorEquipment(floorId: string, zone?: string): Promise<RoomOption[]> {
+  const rows = await getFloorView(floorId, zone)
+  const equipmentOptions: RoomOption[] = []
+  for (const row of rows) {
+    const equipmentRows = (row as Record<string, unknown>).equipment
+    if (!Array.isArray(equipmentRows)) continue
+    for (const e of equipmentRows) {
+      const globalId = (e as Record<string, unknown>).global_id as string | undefined
+      if (globalId) equipmentOptions.push({ global_id: globalId, name: (e as Record<string, unknown>).name as string | undefined })
+    }
+  }
+  return equipmentOptions
+}
+
+export async function getFloorView(floorId: string, zone?: string) {
   try {
-    const resp = await apiClient.get('/api/bim/graph/view', { params: { floor_id: floorId } })
+    const resp = await apiClient.get('/api/bim/graph/view', { params: zone ? { floor_id: floorId, zone } : { floor_id: floorId } })
     return unwrapArcadeResult(resp.data)
   } catch (error) {
     throw new Error(extractErrorMessage(error, 'Failed to fetch floor view'))
@@ -164,6 +245,22 @@ export async function getBuildings(zone?: string) {
   }
 }
 
+/**
+ * Supprime intégralement une zone (Building/Floor/Room/Equipment/Typology +
+ * leur historique time-series) -- pour nettoyer une maquette de test sans
+ * laisser de résidus qui polluent le graphe (plusieurs Building affichés en
+ * même temps) ou la variable Grafana "location" (entrées mortes).
+ * Irréversible : à confirmer côté UI avant l'appel.
+ */
+export async function deleteZone(zone: string): Promise<{ deleted_nodes: Record<string, number>; deleted_readings: number }> {
+  try {
+    const resp = await apiClient.delete('/api/bim/graph/zone', { params: { zone } })
+    return resp.data
+  } catch (error) {
+    throw new Error(extractErrorMessage(error, 'Failed to delete zone'))
+  }
+}
+
 export async function getEquipment() {
   try {
     const resp = await apiClient.get('/api/bim/graph/equipment')
@@ -211,6 +308,56 @@ export interface EquipmentMetricSummary {
 }
 
 /**
+ * Formate une valeur numérique de métrique pour l'affichage -- valeur
+ * courante OU un point d'historique quelconque, même règle dans les deux cas
+ * (voir formatMetricValue). Arrondit avant de chercher un `value_labels` :
+ * les générateurs de simulation ajoutent volontairement du bruit même aux
+ * métriques d'état (0/1) pour éviter des plateaux parfaitement plats -- une
+ * valeur comme 1.07 ne matcherait jamais la clé exacte "1" sinon, et
+ * retomberait à tort sur le nombre brut au lieu du libellé ("Marche").
+ */
+export function formatValue(
+  rawValue: number | null | undefined,
+  metric: Pick<EquipmentMetricSummary, 'unit' | 'value_labels'>,
+): string {
+  if (rawValue === undefined || rawValue === null) return '—'
+  const label = metric.value_labels?.[String(Math.round(rawValue))]
+  if (label) return label
+  return metric.unit ? `${rawValue} ${metric.unit}` : String(rawValue)
+}
+
+/** Valeur COURANTE d'une métrique -- popups graphe et 3D. */
+export function formatMetricValue(metric: EquipmentMetricSummary): string {
+  return formatValue(metric.current?.value, metric)
+}
+
+/**
+ * "2026-08-31 07:07:24.957" -> "31/08 07:07". Formatage par découpe de
+ * chaîne (pas new Date()) pour afficher exactement l'horodatage stocké en
+ * base sans décalage de fuseau introduit par le navigateur.
+ */
+export function formatHistoryTimestamp(timestamp: string): string {
+  const [datePart, timePart] = timestamp.split(' ')
+  if (!datePart || !timePart) return timestamp
+  const [, month, day] = datePart.split('-')
+  const [hh, mm] = timePart.split(':')
+  if (!month || !day || !hh || !mm) return timestamp
+  return `${day}/${month} ${hh}:${mm}`
+}
+
+/**
+ * Les noms d'équipement exportés depuis Revit sont souvent très longs
+ * ("M_Centrifugal Fan - Rooftop - Upblast:991-1905 LPS:991-1905
+ * LPS:602396") -- sans coupe explicite, ce texte pousse le reste de la
+ * popup (valeurs d'historique comprises) hors de la largeur visible.
+ * Tronqué en JS plutôt que par CSS `text-overflow: ellipsis` seul, pour un
+ * rendu garanti même si la feuille de style n'est pas (encore) appliquée.
+ */
+export function truncateLabel(label: string, maxLength = 32): string {
+  return label.length > maxLength ? `${label.slice(0, maxLength - 1)}…` : label
+}
+
+/**
  * Valeur courante + historique récent d'un équipement, groupés par métrique
  * -- consommé par la popup flottante du graphe (EquipmentTelemetryPopup).
  * `metrics: []` est une réponse valide (équipement sans télémétrie simulée
@@ -226,6 +373,12 @@ export async function getEquipmentSummary(
     })
     return (resp.data.metrics ?? []) as EquipmentMetricSummary[]
   } catch (error) {
+    // 404 = ce GlobalId n'est pas un nœud Equipment dans le graphe (mur,
+    // pièce, mobilier non catalogué...) -- un clic 3D peut toucher
+    // n'importe quel type d'élément, pas seulement de l'équipement, donc
+    // c'est un état normal (pas de télémétrie) et non une erreur à afficher.
+    const status = (error as { response?: { status?: number } }).response?.status
+    if (status === 404) return []
     throw new Error(extractErrorMessage(error, 'Failed to fetch equipment summary'))
   }
 }
@@ -234,7 +387,7 @@ export async function getEquipmentSummary(
  * Upload + validation + ingestion d'un lot de maquettes IFC.
  * Remplace le fetch('http://127.0.0.1:8000/ingest-batch', ...) d'origine.
  */
-export async function ingestBatch(zone: string, files: { name: string; discipline: string; content: string }[]) {
+export async function ingestBatch(zone: string, files: { name: string; disciplines: string[]; content: string }[]) {
   try {
     const resp = await apiClient.post(
       '/api/bim/ingest-batch',
