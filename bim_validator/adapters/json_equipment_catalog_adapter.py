@@ -86,12 +86,23 @@ class JsonEquipmentCatalogAdapter(EquipmentCatalogPort):
             for m in spec.get("metrics", [])
         ]
         history = spec.get("history", {})
+        # Quand un type d'équipement définit son propre pas de détection
+        # (ex: détecteur de présence), c'est LUI qui fixe points_per_day --
+        # jamais les deux valeurs renseignées indépendamment, ce qui
+        # permettrait de les faire diverger silencieusement.
+        detection_interval_seconds = spec.get("detection_interval_seconds")
+        points_per_day = (
+            max(1, round(86400 / detection_interval_seconds))
+            if detection_interval_seconds
+            else history.get("points_per_day", 24)
+        )
         return EquipmentSimulationSpec(
             equipment_type=equipment_type,
             label=spec.get("label", equipment_type),
             metrics=metrics,
             history_days=history.get("days", 7),
-            points_per_day=history.get("points_per_day", 24),
+            points_per_day=points_per_day,
+            detection_interval_seconds=detection_interval_seconds,
         )
 
     def all_metric_names(self) -> list[str]:

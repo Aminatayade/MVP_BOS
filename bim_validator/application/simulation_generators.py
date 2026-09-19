@@ -142,9 +142,38 @@ def sparse_event_log(
     return messages
 
 
+def reservation_correlated(
+    *, global_id: str, metric: MetricSpec, history_days: int, points_per_day: int,
+    now: datetime, rng: random.Random, source: str,
+) -> list[UnifiedMessage]:
+    """Occupation DÉCLARÉE (réservation), pas mesurée -- pour la même salle
+    qu'un détecteur de présence (occupancy_correlated), mais volontairement
+    différente : un créneau des heures ouvrées est déclaré réservé à
+    `capacity` pendant TOUTE sa durée (jamais de montée/descente en charge,
+    contrairement à une mesure physique), plus de rares réservations hors
+    heures ouvrées qui ne se concrétisent jamais (`extra_booking_rate`).
+    `capacity` est fixé plus haut que le `peak` réel d'occupancy_correlated
+    dans le catalogue -- l'écart mesuré/déclaré (taux de no-show) est donc
+    STRUCTUREL, pas un artefact de bruit aléatoire."""
+    capacity = float(metric.params.get("capacity", 1.0))
+    occupied_hours = metric.params.get("occupied_hours", [9, 18])
+    extra_booking_rate = float(metric.params.get("extra_booking_rate", 0.08))
+
+    messages = []
+    for _, ts in _iter_timestamps(history_days, points_per_day, now):
+        reserved = _is_occupied(ts, occupied_hours) or rng.random() < extra_booking_rate
+        value = capacity if reserved else 0.0
+        messages.append(UnifiedMessage(
+            global_id=global_id, timestamp=ts, metric=metric.name,
+            value=round(value, 2), unit=metric.unit, quality=_quality(rng), source=source,
+        ))
+    return messages
+
+
 GENERATORS = {
     "day_night_cycle": day_night_cycle,
     "occupancy_correlated": occupancy_correlated,
+    "reservation_correlated": reservation_correlated,
     "cumulative_daily_profile": cumulative_daily_profile,
     "sparse_event_log": sparse_event_log,
 }

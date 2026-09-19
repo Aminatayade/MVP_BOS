@@ -21,3 +21,12 @@ class CockpitIn(BaseModel):
     category: Optional[str] = None
     tags: list[str] = []
     composition: dict
+
+
+class MaintenanceSettingsIn(BaseModel):
+    seuil_alerte: float
+
+
+class OccupancySettingsIn(BaseModel):
+    seuil_bas: float
+    seuil_haut: float

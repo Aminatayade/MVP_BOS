@@ -23,10 +23,24 @@ from application.services.bim_graph_ingestion_service import BimGraphIngestionRe
 from application.bim_validator_service import BimValidatorService
 from application.bim_ingestion_service import BimIngestionService
 from application.equipment_simulation_service import EquipmentSimulationService
+from application.services.occupancy_provisioning_service import OccupancyProvisioningService
+from application.occupancy_aggregation import (
+    bucket_daily_occupancy_pct,
+    classify_threshold_counts,
+    compute_donut,
+    compute_reservation_rate,
+    filter_by_plage,
+    per_sensor_occupancy_pct,
+)
 from domain.entities import ValidationReport
 from infrastructure.adapters.arcadedb_repository_adapter import ArcadeDbRepositoryAdapter
 from infrastructure.secrets import read_secret
 from infrastructure.adapters.seaweed_storage_adapter import SeaweedStorageAdapter
+from infrastructure.zone_database import (
+    LEGACY_DATABASE,
+    invalidate_zone_cache,
+    resolve_database_for_zone,
+)
 from datetime import datetime
 
 # Singleton process : le pool de threads du backfill de simulation doit être
@@ -110,6 +124,29 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.end_headers()
 
+    def _arcadedb_repo_factory(self):
+        """Ferme sur les identifiants de connexion ArcadeDB (lus une seule
+        fois) et renvoie une fonction `database -> ArcadeDbRepositoryAdapter`
+        -- remplace la répétition, à chaque route, du bloc "lire les 4 env
+        vars/secrets puis construire l'adapter". Nécessaire pour
+        `resolve_database_for_zone` (isolation par zone, Phase 1) qui doit
+        pouvoir sonder PLUSIEURS bases candidates (celle de la zone, puis la
+        base legacy partagée) sans connaître elle-même ces identifiants.
+        """
+        arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
+        arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
+        arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
+
+        def factory(database: str) -> ArcadeDbRepositoryAdapter:
+            return ArcadeDbRepositoryAdapter(
+                base_url=arcadedb_base_url,
+                database=database,
+                username=arcadedb_username,
+                password=arcadedb_password,
+            )
+
+        return factory
+
     def do_DELETE(self):
         try:
             parsed = urlparse(self.path)
@@ -134,16 +171,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                     self._send_json({"error": "zone query param is required"}, 400)
                     return
 
-                arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-                arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-                arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-                arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-                repo = ArcadeDbRepositoryAdapter(
-                    base_url=arcadedb_base_url,
-                    database=arcadedb_database,
-                    username=arcadedb_username,
-                    password=arcadedb_password,
-                )
+                repo_factory = self._arcadedb_repo_factory()
+                database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+                if database is None:
+                    self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                    return
+                repo = repo_factory(database)
                 try:
                     escaped_zone = _cypher_escape(zone)
 
@@ -175,6 +208,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                             )
                         deleted_nodes[vertex_type] = n_before
 
+                    # Sans ça, une zone supprimée puis ré-ingérée sous le
+                    # même nom resterait à tort résolue vers son ancienne
+                    # base (le cache de résolution est sinon permanent).
+                    invalidate_zone_cache(zone)
+
                     self._send_json({
                         "ok": True,
                         "zone": zone,
@@ -203,16 +241,18 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return
 
             # Build a simple cypher to fetch the floor, its rooms and equipment
-            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-            arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-            repo = ArcadeDbRepositoryAdapter(
-                base_url=arcadedb_base_url,
-                database=arcadedb_database,
-                username=arcadedb_username,
-                password=arcadedb_password,
-            )
+            repo_factory = self._arcadedb_repo_factory()
+            if zone:
+                database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+                if database is None:
+                    self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                    return
+            else:
+                # zone facultatif ici (compat ascendante) : sans elle, aucun
+                # moyen de choisir une base par zone -- repli direct sur la
+                # base legacy partagée, comme avant ce changement.
+                database = LEGACY_DATABASE
+            repo = repo_factory(database)
 
             # Note: ArcadeDB may return nodes under a wrapper; frontend will adapt.
             #
@@ -269,16 +309,15 @@ RETURN f AS floor, rooms AS rooms, collect(distinct e) AS equipment
             # se trouvent pas dans le graphe").
             params = parse_qs(parsed.query)
             zone = params.get("zone", [None])[0]
-            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-            arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-            repo = ArcadeDbRepositoryAdapter(
-                base_url=arcadedb_base_url,
-                database=arcadedb_database,
-                username=arcadedb_username,
-                password=arcadedb_password,
-            )
+            repo_factory = self._arcadedb_repo_factory()
+            if zone:
+                database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+                if database is None:
+                    self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                    return
+            else:
+                database = LEGACY_DATABASE
+            repo = repo_factory(database)
             try:
                 if zone:
                     cy = (
@@ -303,16 +342,15 @@ RETURN f AS floor, rooms AS rooms, collect(distinct e) AS equipment
             # maquette restait "en cache".
             params = parse_qs(parsed.query)
             zone = params.get("zone", [None])[0]
-            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-            arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-            repo = ArcadeDbRepositoryAdapter(
-                base_url=arcadedb_base_url,
-                database=arcadedb_database,
-                username=arcadedb_username,
-                password=arcadedb_password,
-            )
+            repo_factory = self._arcadedb_repo_factory()
+            if zone:
+                database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+                if database is None:
+                    self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                    return
+            else:
+                database = LEGACY_DATABASE
+            repo = repo_factory(database)
             try:
                 if zone:
                     cy = f"MATCH (b:Building {{zone: '{_cypher_escape(zone)}'}}) RETURN b LIMIT 500"
@@ -324,18 +362,22 @@ RETURN f AS floor, rooms AS rooms, collect(distinct e) AS equipment
                 self._send_json({"error": str(exc)}, 500)
             return
         if parsed.path == "/graph/equipment":
-            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-            arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-            repo = ArcadeDbRepositoryAdapter(
-                base_url=arcadedb_base_url,
-                database=arcadedb_database,
-                username=arcadedb_username,
-                password=arcadedb_password,
-            )
+            # Vue admin/inspecteur peu utilisée -- zone désormais requise
+            # (avant : tout l'Equipment, toutes zones confondues, sur la
+            # seule base par défaut ; incohérent avec l'isolation par zone).
+            params = parse_qs(parsed.query)
+            zone = (params.get("zone", [None])[0] or "").strip()
+            if not zone:
+                self._send_json({"error": "zone query param is required"}, 400)
+                return
+            repo_factory = self._arcadedb_repo_factory()
+            database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+            if database is None:
+                self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                return
+            repo = repo_factory(database)
             try:
-                cy = "MATCH (e:Equipment) RETURN e LIMIT 500"
+                cy = f"MATCH (e:Equipment {{zone: '{_cypher_escape(zone)}'}}) RETURN e LIMIT 500"
                 resp = repo.query_cypher(cy)
                 self._send_json({"ok": True, "result": resp})
             except Exception as exc:
@@ -344,20 +386,17 @@ RETURN f AS floor, rooms AS rooms, collect(distinct e) AS equipment
         if parsed.path == "/graph/neighbors":
             params = parse_qs(parsed.query)
             gid = params.get("global_id", [None])[0]
-            if not gid:
-                self._send_json({"error": "global_id query param is required"}, 400)
+            zone = (params.get("zone", [None])[0] or "").strip()
+            if not gid or not zone:
+                self._send_json({"error": "global_id and zone query params are required"}, 400)
                 return
 
-            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-            arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-            repo = ArcadeDbRepositoryAdapter(
-                base_url=arcadedb_base_url,
-                database=arcadedb_database,
-                username=arcadedb_username,
-                password=arcadedb_password,
-            )
+            repo_factory = self._arcadedb_repo_factory()
+            database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+            if database is None:
+                self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                return
+            repo = repo_factory(database)
 
             # Les relations LOCATED_IN vers un Equipment sont exclues des "voisins
             # structurels" : une pièce peut porter des dizaines d'équipements, ce
@@ -381,20 +420,17 @@ RETURN n AS node, structural_neighbors AS neighbors, count(distinct eq) AS equip
         if parsed.path == "/graph/room-equipment":
             params = parse_qs(parsed.query)
             gid = params.get("global_id", [None])[0]
-            if not gid:
-                self._send_json({"error": "global_id query param is required"}, 400)
+            zone = (params.get("zone", [None])[0] or "").strip()
+            if not gid or not zone:
+                self._send_json({"error": "global_id and zone query params are required"}, 400)
                 return
 
-            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-            arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-            repo = ArcadeDbRepositoryAdapter(
-                base_url=arcadedb_base_url,
-                database=arcadedb_database,
-                username=arcadedb_username,
-                password=arcadedb_password,
-            )
+            repo_factory = self._arcadedb_repo_factory()
+            database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+            if database is None:
+                self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                return
+            repo = repo_factory(database)
 
             cypher = f"""
 MATCH (e:Equipment)-[:LOCATED_IN]->(r {{global_id: '{gid}'}})
@@ -415,21 +451,17 @@ RETURN e AS node
             # noeuds Equipment -- d'ou une requete SANS label explicite pour
             # couvrir tous les types de noeuds porteurs de storage_url.
             params = parse_qs(parsed.query)
-            zone = params.get("zone", [None])[0]
+            zone = (params.get("zone", [None])[0] or "").strip()
             if not zone:
                 self._send_json({"error": "zone query param is required"}, 400)
                 return
 
-            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-            arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-            repo = ArcadeDbRepositoryAdapter(
-                base_url=arcadedb_base_url,
-                database=arcadedb_database,
-                username=arcadedb_username,
-                password=arcadedb_password,
-            )
+            repo_factory = self._arcadedb_repo_factory()
+            database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+            if database is None:
+                self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                return
+            repo = repo_factory(database)
 
             cypher = f"""
 MATCH (n {{zone: '{_cypher_escape(zone)}'}}) WHERE n.storage_url IS NOT NULL
@@ -487,21 +519,27 @@ RETURN DISTINCT n.discipline AS discipline, n.storage_url AS storage_url
             # Rooms ET Floors dans une seule liste : certaines maquettes (ex:
             # celles sans IfcSpace) rattachent les équipements directement au
             # Floor plutôt qu'à un Room -- le sélecteur Grafana doit couvrir
-            # les deux niveaux, pas seulement les Rooms.
-            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-            arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-            repo = ArcadeDbRepositoryAdapter(
-                base_url=arcadedb_base_url,
-                database=arcadedb_database,
-                username=arcadedb_username,
-                password=arcadedb_password,
-            )
+            # les deux niveaux, pas seulement les Rooms. zone désormais
+            # requise (isolation par zone, Phase 1) : avant, cette route
+            # renvoyait Room/Floor de TOUTES les zones sans distinction.
+            params = parse_qs(parsed.query)
+            zone = (params.get("zone", [None])[0] or "").strip()
+            if not zone:
+                self._send_json({"error": "zone query param is required"}, 400)
+                return
+            repo_factory = self._arcadedb_repo_factory()
+            database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+            if database is None:
+                self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                return
+            repo = repo_factory(database)
             try:
                 locations = []
                 for label in ("Room", "Floor"):
-                    resp = repo.query_cypher(f"MATCH (n:{label}) RETURN n LIMIT 1000")
+                    resp = repo.query_cypher(
+                        f"MATCH (n:{label} {{zone: $zone}}) RETURN n LIMIT 1000",
+                        params={"zone": zone},
+                    )
                     rows = resp.get("result") or []
                     for row in rows:
                         node = row.get("n", row)
@@ -545,24 +583,37 @@ RETURN DISTINCT n.discipline AS discipline, n.storage_url AS storage_url
             # l'équipement du périmètre. Absent = comportement inchangé
             # (tous les équipements du périmètre, comme avant).
             category = params.get("category", [None])[0]
-            if not gid_param or not metric:
-                self._send_json({"error": "global_id and metric query params are required"}, 400)
+            # Facultatif : bornes epoch millis (widget "Barres dans le temps"
+            # avec pagination "Mois précédent/suivant" -- voir period.ts côté
+            # frontend). Absents = comportement inchangé (les `raw_limit`
+            # points les plus récents, comme avant), pour ne rien casser côté
+            # Grafana/widgets existants qui n'envoient jamais ces paramètres.
+            start_param = params.get("start", [None])[0]
+            end_param = params.get("end", [None])[0]
+            zone = (params.get("zone", [None])[0] or "").strip()
+            if not gid_param or not metric or not zone:
+                self._send_json({"error": "global_id, metric and zone query params are required"}, 400)
                 return
             location_ids = sorted({g.strip() for g in gid_param.split(",") if g.strip()})
             if not location_ids:
                 self._send_json({"error": "global_id and metric query params are required"}, 400)
                 return
 
-            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-            arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-            repo = ArcadeDbRepositoryAdapter(
-                base_url=arcadedb_base_url,
-                database=arcadedb_database,
-                username=arcadedb_username,
-                password=arcadedb_password,
-            )
+            # Deux bases : la traversée du graphe (résoudre quels équipements
+            # sont dans le périmètre) doit passer par la base DE LA ZONE
+            # (isolation par zone, Phase 1) ; la lecture d'EquipmentReading
+            # reste sur le magasin timeseries partagé, INCHANGÉ quelle que
+            # soit la zone -- ce dernier est hors périmètre de cette phase
+            # (voir le plan "Isolation des données par zone"). Pour une zone
+            # legacy (ex: Batipompe), les deux pointent vers la même base
+            # "bim" -- aucun cas particulier à gérer, le code est identique.
+            repo_factory = self._arcadedb_repo_factory()
+            graph_database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+            if graph_database is None:
+                self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                return
+            graph_repo = repo_factory(graph_database)
+            timeseries_repo = repo_factory(LEGACY_DATABASE)
             try:
                 escaped_location_ids = [lid.replace("'", "\\'") for lid in location_ids]
                 location_list = ", ".join(f"'{lid}'" for lid in escaped_location_ids)
@@ -588,7 +639,7 @@ MATCH (e:Equipment)-[:LOCATED_IN]->(l)
 WHERE true{category_clause}
 RETURN DISTINCT e.global_id AS gid
 """
-                resp = repo.query_cypher(neighbors_cy)
+                resp = graph_repo.query_cypher(neighbors_cy)
                 rows = resp.get("result") or []
                 equipment_ids = sorted({row.get("gid") for row in rows if row.get("gid")})
 
@@ -596,8 +647,14 @@ RETURN DISTINCT e.global_id AS gid
                     self._send_json({"ok": True, "equipment_count": 0, "readings": []})
                     return
 
-                escaped_metric = metric.replace("'", "\\'")
-                id_list = ", ".join("'" + eid.replace("'", "\\'") + "'" for eid in equipment_ids)
+                range_clause = ""
+                sql_params: dict = {"metric": metric, "ids": equipment_ids}
+                if start_param:
+                    range_clause += " AND ts >= :start_ts"
+                    sql_params["start_ts"] = int(start_param)
+                if end_param:
+                    range_clause += " AND ts <= :end_ts"
+                    sql_params["end_ts"] = int(end_param)
                 # ORDER BY ts DESC : avec un lieu qui a beaucoup d'équipements
                 # (chacun jusqu'à 7 jours d'historique horaire), le nombre
                 # total de lignes dépasse vite `raw_limit` -- trier ASC
@@ -608,13 +665,23 @@ RETURN DISTINCT e.global_id AS gid
                 # temps réel côté graphe). _bucket_and_aggregate retrie de
                 # toute façon par epoch croissant à la fin, donc DESC ici ne
                 # change pas l'ordre du résultat, seulement QUELLES lignes
-                # sont gardées avant troncature.
+                # sont gardées avant troncature. Avec `end` explicite (mois
+                # précédent, pas le mois courant), DESC part bien de la borne
+                # `end` -- pas de "now" -- donc les points gardés restent les
+                # plus récents DE la période demandée, pas les plus récents
+                # tout court.
+                # `global_id IN :ids` en paramètre lié, PAS une liste de
+                # littéraux interpolés dans le texte SQL : mesuré 13-52s (et
+                # même une connexion perdue côté serveur pour ~4800 IDs) avec
+                # des littéraux, contre ~5-6s de façon fiable en paramètre lié
+                # -- ArcadeDB n'a alors plus à reparser un texte de plusieurs
+                # centaines de Ko à chaque appel avec un contenu différent.
                 sql = (
                     "SELECT ts, value FROM EquipmentReading WHERE "
-                    f"metric = '{escaped_metric}' AND global_id IN [{id_list}] "
+                    f"metric = :metric AND global_id IN :ids{range_clause} "
                     f"ORDER BY ts DESC LIMIT {raw_limit}"
                 )
-                ts_resp = repo.query_sql(sql)
+                ts_resp = timeseries_repo.query_sql(sql, params=sql_params)
                 ts_rows = ts_resp.get("result") or []
                 aggregation = (
                     aggregation_override if aggregation_override in _AGGREGATORS else _aggregation_for_metric(metric)
@@ -654,24 +721,25 @@ RETURN DISTINCT e.global_id AS gid
             # choix automatique _aggregation_for_metric comme avant.
             category = params.get("category", [None])[0]
             aggregation_override = params.get("aggregation", [None])[0]
-            if not gid_param or not metric:
-                self._send_json({"error": "global_id and metric query params are required"}, 400)
+            zone = (params.get("zone", [None])[0] or "").strip()
+            if not gid_param or not metric or not zone:
+                self._send_json({"error": "global_id, metric and zone query params are required"}, 400)
                 return
             location_ids = sorted({g.strip() for g in gid_param.split(",") if g.strip()})
             if not location_ids:
                 self._send_json({"error": "global_id and metric query params are required"}, 400)
                 return
 
-            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-            arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-            repo = ArcadeDbRepositoryAdapter(
-                base_url=arcadedb_base_url,
-                database=arcadedb_database,
-                username=arcadedb_username,
-                password=arcadedb_password,
-            )
+            # Voir le commentaire détaillé sur /graph/location-readings :
+            # traversée du graphe sur la base DE LA ZONE, lecture
+            # d'EquipmentReading sur le magasin timeseries partagé inchangé.
+            repo_factory = self._arcadedb_repo_factory()
+            graph_database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+            if graph_database is None:
+                self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                return
+            graph_repo = repo_factory(graph_database)
+            timeseries_repo = repo_factory(LEGACY_DATABASE)
             try:
                 escaped_location_ids = [lid.replace("'", "\\'") for lid in location_ids]
                 location_list = ", ".join(f"'{lid}'" for lid in escaped_location_ids)
@@ -697,7 +765,7 @@ MATCH (e:Equipment)-[:LOCATED_IN]->(l)
 WHERE true{category_clause}
 RETURN DISTINCT e.global_id AS gid
 """
-                resp = repo.query_cypher(neighbors_cy)
+                resp = graph_repo.query_cypher(neighbors_cy)
                 rows = resp.get("result") or []
                 equipment_ids = sorted({row.get("gid") for row in rows if row.get("gid")})
 
@@ -705,23 +773,27 @@ RETURN DISTINCT e.global_id AS gid
                     self._send_json({"ok": True, "equipment_count": 0, "value": None})
                     return
 
-                escaped_metric = metric.replace("'", "\\'")
-                id_list = ", ".join("'" + eid.replace("'", "\\'") + "'" for eid in equipment_ids)
-                conditions = [f"metric = '{escaped_metric}'", f"global_id IN [{id_list}]"]
+                sql_params: dict = {"metric": metric, "ids": equipment_ids}
+                conditions = ["metric = :metric", "global_id IN :ids"]
                 if start_param:
-                    conditions.append(f"ts >= {int(start_param)}")
+                    conditions.append("ts >= :start_ts")
+                    sql_params["start_ts"] = int(start_param)
                 if end_param:
-                    conditions.append(f"ts <= {int(end_param)}")
+                    conditions.append("ts <= :end_ts")
+                    sql_params["end_ts"] = int(end_param)
 
                 # Alias testés directement contre ArcadeDB : "bucket"/"avg"
                 # sont refusés comme alias (mots réservés du parseur SQL),
                 # "total"/"moy"/"maxi"/"mini"/"n" fonctionnent.
+                # `global_id IN :ids` en paramètre lié -- voir le commentaire
+                # détaillé sur /graph/location-readings ci-dessus (même gain
+                # de latence, même requête auparavant construite en littéraux).
                 sql = (
                     "SELECT SUM(value) as total, AVG(value) as moy, MAX(value) as maxi, "
                     "MIN(value) as mini, MIN(unit) as u, COUNT(*) as n FROM EquipmentReading WHERE "
                     f"{' AND '.join(conditions)}"
                 )
-                agg_resp = repo.query_sql(sql)
+                agg_resp = timeseries_repo.query_sql(sql, params=sql_params)
                 agg_rows = agg_resp.get("result") or []
                 row = agg_rows[0] if agg_rows else {}
 
@@ -781,20 +853,21 @@ RETURN DISTINCT e.global_id AS gid
             # /graph/location-readings) -- widget du constructeur de
             # cockpits scopé à "juste l'éclairage" par exemple.
             category = params.get("category", [None])[0]
-            if not building_gid:
-                self._send_json({"error": "global_id query param is required"}, 400)
+            zone = (params.get("zone", [None])[0] or "").strip()
+            if not building_gid or not zone:
+                self._send_json({"error": "global_id and zone query params are required"}, 400)
                 return
 
-            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-            arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-            repo = ArcadeDbRepositoryAdapter(
-                base_url=arcadedb_base_url,
-                database=arcadedb_database,
-                username=arcadedb_username,
-                password=arcadedb_password,
-            )
+            # Voir le commentaire détaillé sur /graph/location-readings :
+            # traversée du graphe sur la base DE LA ZONE, lecture
+            # d'EquipmentReading sur le magasin timeseries partagé inchangé.
+            repo_factory = self._arcadedb_repo_factory()
+            graph_database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+            if graph_database is None:
+                self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                return
+            graph_repo = repo_factory(graph_database)
+            timeseries_repo = repo_factory(LEGACY_DATABASE)
             try:
                 escaped_gid = _cypher_escape(building_gid)
                 category_clause = (
@@ -808,10 +881,8 @@ MATCH (e:Equipment)-[:LOCATED_IN]->(l)
 WHERE l.global_id IN loc_ids{category_clause}
 RETURN f.global_id AS floor_id, f.name AS floor_name, collect(DISTINCT e.global_id) AS equip_ids
 """
-                grouping_resp = repo.query_cypher(grouping_cy)
+                grouping_resp = graph_repo.query_cypher(grouping_cy)
                 floor_rows = grouping_resp.get("result") or []
-
-                escaped_metric = metric.replace("'", "\\'")
 
                 # Une requête PAR équipement (une par étage, N appels) était
                 # correcte mais beaucoup trop lente (~17s mesurés sur 54
@@ -832,13 +903,18 @@ RETURN f.global_id AS floor_id, f.name AS floor_name, collect(DISTINCT e.global_
                 all_equip_ids = sorted({eid for row in floor_rows for eid in (row.get("equip_ids") or [])})
                 latest_by_equipment: dict[str, dict] = {}
                 if all_equip_ids:
-                    id_list = ", ".join("'" + eid.replace("'", "\\'") + "'" for eid in all_equip_ids)
                     fetch_limit = min(5000, max(200, len(all_equip_ids) * 50))
+                    # `global_id IN :ids` en paramètre lié -- voir le
+                    # commentaire détaillé sur /graph/location-readings : un
+                    # bâtiment de plusieurs centaines d'équipements avec cette
+                    # liste interpolée en littéraux dépassait régulièrement le
+                    # timeout de la gateway (10s), constaté sur ce widget
+                    # précis ("Nouvelles barres" à l'échelle Bâtiment).
                     sql = (
-                        f"SELECT global_id, value, unit FROM EquipmentReading WHERE metric = '{escaped_metric}' "
-                        f"AND global_id IN [{id_list}] ORDER BY ts DESC LIMIT {fetch_limit}"
+                        "SELECT global_id, value, unit FROM EquipmentReading WHERE metric = :metric "
+                        f"AND global_id IN :ids ORDER BY ts DESC LIMIT {fetch_limit}"
                     )
-                    recent_rows = repo.query_sql(sql).get("result") or []
+                    recent_rows = timeseries_repo.query_sql(sql, params={"metric": metric, "ids": all_equip_ids}).get("result") or []
                     for row in recent_rows:
                         gid = row.get("global_id")
                         if gid and gid not in latest_by_equipment:
@@ -895,24 +971,21 @@ RETURN f.global_id AS floor_id, f.name AS floor_name, collect(DISTINCT e.global_
             # Même traversal HAS_CHILD*0.. que /graph/location-readings.
             params = parse_qs(parsed.query)
             gid_param = params.get("global_id", [None])[0]
-            if not gid_param:
-                self._send_json({"error": "global_id query param is required"}, 400)
+            zone = (params.get("zone", [None])[0] or "").strip()
+            if not gid_param or not zone:
+                self._send_json({"error": "global_id and zone query params are required"}, 400)
                 return
             location_ids = sorted({g.strip() for g in gid_param.split(",") if g.strip()})
             if not location_ids:
                 self._send_json({"error": "global_id query param is required"}, 400)
                 return
 
-            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-            arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-            repo = ArcadeDbRepositoryAdapter(
-                base_url=arcadedb_base_url,
-                database=arcadedb_database,
-                username=arcadedb_username,
-                password=arcadedb_password,
-            )
+            repo_factory = self._arcadedb_repo_factory()
+            database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+            if database is None:
+                self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                return
+            repo = repo_factory(database)
             try:
                 location_list = ", ".join(f"'{_cypher_escape(lid)}'" for lid in location_ids)
                 # DISTINCT sur global_id, PAS un count(*) direct par
@@ -945,11 +1018,31 @@ RETURN DISTINCT e.global_id AS global_id, e.category AS category, e.equipment_ty
                     )
                     entry["equipment_count"] += 1
                     entry["_type_counts"][equipment_type] = entry["_type_counts"].get(equipment_type, 0) + 1
+                # Métriques RÉELLEMENT simulées pour cette catégorie -- sans
+                # ça, le constructeur de cockpits n'avait aucun moyen de
+                # savoir que "power_instant_kw" (métrique par défaut d'un
+                # nouveau widget) n'a aucune donnée pour un bâtiment donné
+                # (ex: équipements électriques génériques sans capteur), ce
+                # qui affichait silencieusement "0" partout. Union des
+                # métriques du catalogue de simulation à travers tous les
+                # equipment_type réellement présents dans la catégorie.
+                catalog = self._build_equipment_catalog()
                 categories = []
                 for entry in sorted(by_category.values(), key=lambda c: c["category"]):
                     type_counts = entry.pop("_type_counts")
                     entry["equipment_types"] = [
                         {"equipment_type": t, "count": n} for t, n in sorted(type_counts.items())
+                    ]
+                    metrics_by_name: dict[str, str] = {}
+                    for equipment_type in type_counts:
+                        try:
+                            spec = catalog.get_generator_spec(equipment_type)
+                        except KeyError:
+                            continue
+                        for metric in spec.metrics:
+                            metrics_by_name.setdefault(metric.name, metric.unit)
+                    entry["metrics"] = [
+                        {"name": name, "unit": unit} for name, unit in sorted(metrics_by_name.items())
                     ]
                     categories.append(entry)
                 self._send_json({"ok": True, "categories": categories})
@@ -964,8 +1057,9 @@ RETURN DISTINCT e.global_id AS global_id, e.category AS category, e.equipment_ty
             # mêmes garde-fous sur global_id.
             params = parse_qs(parsed.query)
             gid_param = params.get("global_id", [None])[0]
-            if not gid_param:
-                self._send_json({"error": "global_id query param is required"}, 400)
+            zone = (params.get("zone", [None])[0] or "").strip()
+            if not gid_param or not zone:
+                self._send_json({"error": "global_id and zone query params are required"}, 400)
                 return
             location_ids = sorted({g.strip() for g in gid_param.split(",") if g.strip()})
             if not location_ids:
@@ -979,16 +1073,12 @@ RETURN DISTINCT e.global_id AS global_id, e.category AS category, e.equipment_ty
             # correspondance NATS -> recalcul (voir aggregation_bridge.py).
             limit = int(params.get("limit", ["500"])[0])
 
-            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-            arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-            repo = ArcadeDbRepositoryAdapter(
-                base_url=arcadedb_base_url,
-                database=arcadedb_database,
-                username=arcadedb_username,
-                password=arcadedb_password,
-            )
+            repo_factory = self._arcadedb_repo_factory()
+            database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+            if database is None:
+                self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                return
+            repo = repo_factory(database)
             try:
                 location_list = ", ".join(f"'{_cypher_escape(lid)}'" for lid in location_ids)
                 # collect(DISTINCT descendant) seul suffit : HAS_CHILD*0..
@@ -1022,20 +1112,17 @@ LIMIT {limit}
             # _resolve_room_typology) à travers tous les étages du bâtiment.
             params = parse_qs(parsed.query)
             building_gid = params.get("global_id", [None])[0]
-            if not building_gid:
-                self._send_json({"error": "global_id query param is required"}, 400)
+            zone = (params.get("zone", [None])[0] or "").strip()
+            if not building_gid or not zone:
+                self._send_json({"error": "global_id and zone query params are required"}, 400)
                 return
 
-            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-            arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-            repo = ArcadeDbRepositoryAdapter(
-                base_url=arcadedb_base_url,
-                database=arcadedb_database,
-                username=arcadedb_username,
-                password=arcadedb_password,
-            )
+            repo_factory = self._arcadedb_repo_factory()
+            database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+            if database is None:
+                self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                return
+            repo = repo_factory(database)
             try:
                 escaped_gid = _cypher_escape(building_gid)
                 cy = f"""
@@ -1056,20 +1143,17 @@ RETURN t.name AS name, count(DISTINCT r) AS room_count, count(DISTINCT f) AS flo
             params = parse_qs(parsed.query)
             building_gid = params.get("global_id", [None])[0]
             name = params.get("name", [None])[0]
-            if not building_gid or not name:
-                self._send_json({"error": "global_id and name query params are required"}, 400)
+            zone = (params.get("zone", [None])[0] or "").strip()
+            if not building_gid or not name or not zone:
+                self._send_json({"error": "global_id, name and zone query params are required"}, 400)
                 return
 
-            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-            arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-            repo = ArcadeDbRepositoryAdapter(
-                base_url=arcadedb_base_url,
-                database=arcadedb_database,
-                username=arcadedb_username,
-                password=arcadedb_password,
-            )
+            repo_factory = self._arcadedb_repo_factory()
+            database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+            if database is None:
+                self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                return
+            repo = repo_factory(database)
             try:
                 escaped_gid = _cypher_escape(building_gid)
                 escaped_name = _cypher_escape(name)
@@ -1089,20 +1173,17 @@ RETURN r.global_id AS room_id, r.name AS room_name, f.global_id AS floor_id, f.n
             # structure imbriquée plus lourde de /graph/view).
             params = parse_qs(parsed.query)
             floor_gid = params.get("global_id", [None])[0]
-            if not floor_gid:
-                self._send_json({"error": "global_id query param is required"}, 400)
+            zone = (params.get("zone", [None])[0] or "").strip()
+            if not floor_gid or not zone:
+                self._send_json({"error": "global_id and zone query params are required"}, 400)
                 return
 
-            arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-            arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-            arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-            arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-            repo = ArcadeDbRepositoryAdapter(
-                base_url=arcadedb_base_url,
-                database=arcadedb_database,
-                username=arcadedb_username,
-                password=arcadedb_password,
-            )
+            repo_factory = self._arcadedb_repo_factory()
+            database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+            if database is None:
+                self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                return
+            repo = repo_factory(database)
             try:
                 escaped_gid = _cypher_escape(floor_gid)
                 cy = f"""
@@ -1113,6 +1194,172 @@ RETURN r.global_id AS room_id, r.name AS room_name, f.global_id AS floor_id, f.n
                 self._send_json({"ok": True, "rooms": rows})
             except Exception as exc:
                 self._send_json({"error": str(exc)}, 500)
+            return
+        if parsed.path == "/graph/occupancy-dashboard":
+            # Cockpit "Compréhension du taux d'usage des espaces" -- un seul
+            # payload pour les 7 widgets. `start`/`end` (epoch ms) bornent la
+            # période principale, `compare_start`/`compare_end` (optionnels)
+            # une seconde période superposée sur les barres ("Comparer 2
+            # périodes"). Bornage calendaire calculé CÔTÉ FRONTEND (comme
+            # /graph/location-readings), pas ici -- évite de dupliquer la
+            # logique déjà en place dans features/cockpits/utils/period.ts.
+            params = parse_qs(parsed.query)
+            zone = (params.get("zone", [None])[0] or "").strip()
+            etage = (params.get("etage", [None])[0] or "").strip()
+            type_espace = (params.get("type_espace", [None])[0] or "").strip()
+            plage = (params.get("plage", ["7-19"])[0] or "7-19")
+            seuil_bas = float(params.get("seuil_bas", ["20"])[0])
+            seuil_haut = float(params.get("seuil_haut", ["80"])[0])
+            start_param = params.get("start", [None])[0]
+            end_param = params.get("end", [None])[0]
+            compare_start_param = params.get("compare_start", [None])[0]
+            compare_end_param = params.get("compare_end", [None])[0]
+            raw_limit = int(params.get("raw_limit", ["50000"])[0])
+            if not zone or not start_param or not end_param:
+                self._send_json({"error": "zone, start and end query params are required"}, 400)
+                return
+
+            repo_factory = self._arcadedb_repo_factory()
+            # for_write=True : le premier appel sur une zone avec de vraies
+            # Room mais aucun capteur simulé doit pouvoir les provisionner.
+            database = resolve_database_for_zone(repo_factory, zone, for_write=True)
+            if database is None:
+                self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                return
+            if database != LEGACY_DATABASE:
+                repo_factory(database).ensure_database()
+            graph_repo = repo_factory(database)
+
+            try:
+                provisioning = OccupancyProvisioningService(
+                    graph_repository=graph_repo,
+                    simulation_service=self._build_equipment_simulation_service(),
+                    zone=zone,
+                )
+                provision_result = provisioning.provision_zone_if_needed()
+                if not provision_result["has_rooms"]:
+                    self._send_json({"ok": True, "zone": zone, "has_rooms": False})
+                    return
+
+                escaped_zone = _cypher_escape(zone)
+                floor_clause = ""
+                if etage:
+                    floor_clause = (
+                        f"MATCH (f:Floor {{global_id: '{_cypher_escape(etage)}', zone: '{escaped_zone}'}})"
+                        "-[:HAS_CHILD]->(r) "
+                    )
+                type_clause = f" AND r.space_type = '{_cypher_escape(type_espace)}'" if type_espace else ""
+                sensors_cy = f"""
+{floor_clause if floor_clause else ""}MATCH (r:Room {{zone: '{escaped_zone}'}})
+WHERE r.space_type IS NOT NULL{type_clause}
+MATCH (e:Equipment)-[:LOCATED_IN]->(r)
+WHERE e.equipment_type = 'detecteur_presence' AND e.simulated = true
+RETURN DISTINCT e.global_id AS sensor_id, r.global_id AS room_id, r.name AS room_name, r.space_type AS space_type
+"""
+                sensor_rows = graph_repo.query_cypher(sensors_cy).get("result") or []
+                sensor_ids = sorted({row["sensor_id"] for row in sensor_rows if row.get("sensor_id")})
+                room_by_sensor = {row["sensor_id"]: row["room_id"] for row in sensor_rows if row.get("sensor_id")}
+
+                if not sensor_ids:
+                    self._send_json({"ok": True, "zone": zone, "has_rooms": True, "room_count": 0})
+                    return
+
+                timeseries_repo = repo_factory(LEGACY_DATABASE)
+
+                def _fetch(metric: str, start_ms: int, end_ms: int) -> list[dict]:
+                    sql = (
+                        "SELECT ts, value, global_id FROM EquipmentReading WHERE "
+                        "metric = :metric AND global_id IN :ids AND ts >= :start_ts AND ts <= :end_ts "
+                        f"ORDER BY ts DESC LIMIT {raw_limit}"
+                    )
+                    sql_params = {
+                        "metric": metric, "ids": sensor_ids,
+                        "start_ts": int(start_ms), "end_ts": int(end_ms),
+                    }
+                    return timeseries_repo.query_sql(sql, params=sql_params).get("result") or []
+
+                start_ms, end_ms = int(start_param), int(end_param)
+                occ_rows = filter_by_plage(_fetch("occupancy", start_ms, end_ms), plage)
+                res_rows = filter_by_plage(_fetch("reservation", start_ms, end_ms), plage)
+
+                bars_series_a = bucket_daily_occupancy_pct(occ_rows)
+                bars_series_b = None
+                if compare_start_param and compare_end_param:
+                    compare_occ_rows = filter_by_plage(
+                        _fetch("occupancy", int(compare_start_param), int(compare_end_param)), plage,
+                    )
+                    bars_series_b = bucket_daily_occupancy_pct(compare_occ_rows)
+
+                now = datetime.now()
+                ytd_start_ms = int(datetime(now.year, 1, 1).timestamp() * 1000)
+                ytd_rows = filter_by_plage(_fetch("occupancy", ytd_start_ms, end_ms), plage)
+                ytd_donut = compute_donut(ytd_rows)
+
+                per_room_occ_pct = {
+                    room_by_sensor[gid]: pct for gid, pct in per_sensor_occupancy_pct(occ_rows).items()
+                }
+                per_room_res_pct = {
+                    room_by_sensor[gid]: pct for gid, pct in per_sensor_occupancy_pct(res_rows).items()
+                }
+
+                self._send_json({
+                    "ok": True,
+                    "zone": zone,
+                    "has_rooms": True,
+                    "room_count": provision_result["room_count"],
+                    "bars": {"buckets": [p["label"] for p in bars_series_a], "series_a": [p["count"] for p in bars_series_a], "series_b": [p["count"] for p in bars_series_b] if bars_series_b else None},
+                    "donut": compute_donut(occ_rows),
+                    "reservation_rate": compute_reservation_rate(occ_rows, res_rows),
+                    "monthly_avg_since_year_start": ytd_donut["occupied_pct"],
+                    "threshold_counts": classify_threshold_counts(
+                        per_room_occ_pct, per_room_res_pct, seuil_bas=seuil_bas, seuil_haut=seuil_haut
+                    ),
+                    "spaces": [
+                        {
+                            "room_id": row["room_id"], "room_name": row.get("room_name"),
+                            "space_type": row.get("space_type"),
+                            "occupancy_pct": per_room_occ_pct.get(row["room_id"]),
+                            "reservation_pct": per_room_res_pct.get(row["room_id"]),
+                        }
+                        for row in sensor_rows
+                    ],
+                })
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, 500)
+            return
+        if parsed.path == "/graph/zones":
+            # Liste les zones connues -- remplace le champ texte libre de
+            # zone côté frontend (BimExplorer.tsx/BimViewer.tsx) par un vrai
+            # menu déroulant, pour éviter les zones fantômes créées par une
+            # faute de frappe (cause directe du bug de fuite cross-zone
+            # traité plus tôt cette session). Union de deux sources : les
+            # zones encore dans la base legacy partagée (ingérées avant
+            # l'isolation par zone), et celles qui ont leur propre base
+            # `bim_<slug>_<hash>`. Le nom de base n'étant PAS réversible vers
+            # le nom de zone d'origine (slug + hash), on relit la vraie
+            # valeur stockée sur le nœud Building de chaque base plutôt que
+            # de tenter de la reconstruire.
+            repo_factory = self._arcadedb_repo_factory()
+            legacy_repo = repo_factory(LEGACY_DATABASE)
+            zones: set[str] = set()
+            try:
+                rows = legacy_repo.query_sql("SELECT DISTINCT zone FROM Building").get("result") or []
+                zones.update(r["zone"] for r in rows if r.get("zone"))
+            except Exception:
+                pass  # base legacy vide/injoignable : pas fatal pour la liste
+            try:
+                for db_name in legacy_repo.list_databases():
+                    if db_name == LEGACY_DATABASE or not db_name.startswith("bim_"):
+                        continue
+                    try:
+                        zone_repo = repo_factory(db_name)
+                        rows = zone_repo.query_sql("SELECT DISTINCT zone FROM Building LIMIT 1").get("result") or []
+                        zones.update(r["zone"] for r in rows if r.get("zone"))
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            self._send_json({"ok": True, "zones": sorted(zones)})
             return
         self._send_json({"error": "Not found"}, 404)
 
@@ -1206,6 +1453,17 @@ RETURN r.global_id AS room_id, r.name AS room_name, f.global_id AS floor_id, f.n
             self._send_json({"error": "files must be an array"}, 400)
             return
 
+        # Résolue/créée UNE FOIS pour tout le batch (isolation par zone,
+        # Phase 1) -- pas par fichier : tous les fichiers d'un même appel
+        # partagent une seule `zone` (voir docstring), donc une seule base.
+        # Une zone déjà connue (créée par un ingest précédent, ou héritée de
+        # la base legacy partagée) réutilise sa base existante ; une zone
+        # neuve obtient sa propre base, créée ici avant le premier fichier.
+        repo_factory = self._arcadedb_repo_factory()
+        database = resolve_database_for_zone(repo_factory, zone, for_write=True)
+        if database != LEGACY_DATABASE:
+            repo_factory(database).ensure_database()
+
         valid_entries: list[tuple[list[str], dict]] = []
         invalid_results = []
         for file_info in files:
@@ -1243,7 +1501,7 @@ RETURN r.global_id AS room_id, r.name AS room_name, f.global_id AS floor_id, f.n
 
         results = []
         for disciplines, file_info in valid_entries:
-            result = self._validate_store_and_ingest_graph(disciplines, zone, file_info)
+            result = self._validate_store_and_ingest_graph(disciplines, zone, file_info, database)
             results.append({
                 "filename": file_info["name"],
                 "result": result,
@@ -1256,8 +1514,13 @@ RETURN r.global_id AS room_id, r.name AS room_name, f.global_id AS floor_id, f.n
             "results": results,
         })
 
-    def _validate_store_and_ingest_graph(self, disciplines: list[str], zone: str, file_info: dict) -> dict:
-        """Validation + stockage SeaweedFS + ingestion ArcadeDB en un seul flux."""
+    def _validate_store_and_ingest_graph(
+        self, disciplines: list[str], zone: str, file_info: dict, database: str,
+    ) -> dict:
+        """Validation + stockage SeaweedFS + ingestion ArcadeDB en un seul flux.
+
+        `database` : base graphe déjà résolue/créée une fois pour toute la
+        zone par `_handle_ingest_batch` (isolation par zone, Phase 1)."""
         file_payload = self._validate_single_file(disciplines, file_info)
 
         if file_payload.get("error"):
@@ -1275,7 +1538,7 @@ RETURN r.global_id AS room_id, r.name AS room_name, f.global_id AS floor_id, f.n
                 },
             }
 
-        graph_service = self._build_graph_ingestion_service()
+        graph_service = self._build_graph_ingestion_service(database)
         graph_result = graph_service.ingest_from_storage(
             object_key=file_payload["storage_url"],
             disciplines=disciplines,
@@ -1288,7 +1551,7 @@ RETURN r.global_id AS room_id, r.name AS room_name, f.global_id AS floor_id, f.n
             # ne doit jamais faire échouer l'ingestion elle-même, seulement
             # laisser le cockpit un peu en retard sur le graphe.
             try:
-                dashboard_sync = self._build_dashboard_sync()
+                dashboard_sync = self._build_dashboard_sync(database)
                 if dashboard_sync is not None:
                     dashboard_sync.sync_variables(zone=zone)
             except Exception as exc:
@@ -1299,11 +1562,17 @@ RETURN r.global_id AS room_id, r.name AS room_name, f.global_id AS floor_id, f.n
             "graph_ingestion": serialize_graph_result(graph_result),
         }
 
-    def _build_dashboard_sync(self) -> GrafanaDashboardSyncAdapter | None:
+    def _build_dashboard_sync(self, database: str) -> GrafanaDashboardSyncAdapter | None:
         """Resynchronise après chaque ingestion réussie les variables
         "Pièce/Étage" ET "Type de donnée" du cockpit Grafana, pour qu'elles
         reflètent l'état courant d'ArcadeDB/du catalogue plutôt qu'un
         instantané figé au moment de la création du dashboard.
+
+        `database` : base graphe déjà résolue pour la zone de cet ingestion
+        (voir _handle_ingest_batch) -- Grafana n'a aucune notion de zone
+        aujourd'hui (dashboards configurés à la main, hors périmètre Phase 1
+        de l'isolation par zone), donc cette synchro continue de ne
+        représenter que la DERNIÈRE zone ingérée, comme avant ce changement.
 
         La variable Grafana native basée sur la datasource Infinity (requête
         dynamique) ne s'exécute jamais dans cette version de Grafana --
@@ -1318,16 +1587,7 @@ RETURN r.global_id AS room_id, r.name AS room_name, f.global_id AS floor_id, f.n
         if not grafana_url or not grafana_password:
             return None
 
-        arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-        arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-        arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-        arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-        graph_repo = ArcadeDbRepositoryAdapter(
-            base_url=arcadedb_base_url,
-            database=arcadedb_database,
-            username=arcadedb_username,
-            password=arcadedb_password,
-        )
+        graph_repo = self._arcadedb_repo_factory()(database)
 
         return GrafanaDashboardSyncAdapter(
             grafana_url=grafana_url,
@@ -1367,18 +1627,11 @@ RETURN r.global_id AS room_id, r.name AS room_name, f.global_id AS floor_id, f.n
             )
         return _equipment_simulation_service_singleton
 
-    def _build_graph_ingestion_service(self) -> BimGraphIngestionService:
-        arcadedb_base_url = os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480")
-        arcadedb_database = os.environ.get("ARCADEDB_DATABASE", "bim")
-        arcadedb_username = os.environ.get("ARCADEDB_USERNAME", "root")
-        arcadedb_password = read_secret("ARCADEDB_PASSWORD", "testBIM123")
-
-        graph_repo = ArcadeDbRepositoryAdapter(
-            base_url=arcadedb_base_url,
-            database=arcadedb_database,
-            username=arcadedb_username,
-            password=arcadedb_password,
-        )
+    def _build_graph_ingestion_service(self, database: str) -> BimGraphIngestionService:
+        """`database` : base graphe déjà résolue/créée UNE FOIS par
+        `_handle_ingest_batch` pour la zone de ce batch (isolation par
+        zone, Phase 1) -- ne relit plus ARCADEDB_DATABASE ici."""
+        graph_repo = self._arcadedb_repo_factory()(database)
 
         # object_key peut etre une URL complete retournee par SeaweedFsStorageAdapter.
         seaweed_reader = SeaweedStorageAdapter()

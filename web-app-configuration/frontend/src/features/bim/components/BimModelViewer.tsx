@@ -32,9 +32,11 @@ import { useEquipmentTelemetry } from '../hooks/useEquipmentTelemetry'
 
 type Props = {
   sources: ModelSource[]
-  // Sert à filtrer le sélecteur étage -> pièce affiché avant d'entrer en
-  // immersion. Sans zone, la liste d'étages n'est simplement pas filtrée.
-  zone?: string
+  // Requise depuis l'isolation par zone du graphe (Phase 1) : /graph/floors
+  // (et les autres routes de lecture) ont désormais besoin de `zone` pour
+  // savoir quelle base ArcadeDB interroger, pas seulement pour filtrer le
+  // sélecteur étage -> pièce affiché avant d'entrer en immersion.
+  zone: string
   height?: string | number
   // Sélection croisée avec le graphe (Mode Duo, voir BimExplorer.tsx) :
   // remonte le GlobalId + type IFC (via item.getCategory()) cliqué en 3D au
@@ -116,7 +118,7 @@ export default function BimModelViewer({
   // fermait/rouvrait sa propre popup en boucle).
   const selectedGuidRef = useRef<string | null>(null)
   selectedGuidRef.current = selected?.guid ?? null
-  const [navMode, setNavMode] = useState<'Orbit' | 'FirstPerson'>('Orbit')
+  const [navMode, setNavMode] = useState<'Orbit' | 'FirstPerson' | 'Plan'>('Orbit')
   const pressedKeysRef = useRef<Set<string>>(new Set())
   // Position de la souris, normalisée (-1..1) par rapport au centre de la
   // vue -- lue par la boucle de déplacement pour orienter la marche
@@ -323,18 +325,19 @@ export default function BimModelViewer({
   // Extrait pour être appelable aussi bien depuis le bouton que depuis la
   // touche Échap (voir handleKeyDown) -- affichée dans le petit tuto en
   // immersion, donc son fonctionnement réel doit correspondre exactement.
-  const exitFirstPerson = () => {
-    worldRef.current?.camera.set('Orbit')
+  // Généralisé pour revenir à l'Orbite depuis N'IMPORTE quel autre mode (pas
+  // seulement Immersion) : Plan est en projection Orthographique, il faut
+  // donc aussi la remettre en Perspective -- FirstPerson l'est déjà, ce
+  // reset est alors un no-op sans effet indésirable pour ce cas-là.
+  const enterOrbitMode = async () => {
+    const world = worldRef.current
+    if (!world) return
+    if (world.camera.projection.current !== 'Perspective') {
+      await world.camera.projection.set('Perspective')
+    }
+    world.camera.set('Orbit')
     setNavMode('Orbit')
     pressedKeysRef.current.clear()
-  }
-
-  const toggleNavMode = () => {
-    if (navMode === 'FirstPerson') {
-      exitFirstPerson()
-      return
-    }
-    openModeChoice()
   }
 
   // Point d'entrée réel de la téléportation. FirstPersonMode refuse de
@@ -425,7 +428,7 @@ export default function BimModelViewer({
     }
     setTeleportFloorsLoading(true)
     try {
-      const [all, buildings] = await Promise.all([getFloors(), getBuildingsList(zone)])
+      const [all, buildings] = await Promise.all([getFloors(zone), getBuildingsList(zone)])
       const zoneFloors = zone ? all.filter((f) => f.zone === zone) : all
       setTeleportFloors(zoneFloors)
       routeToBuildingOrFloorStep(zoneFloors, buildings)
@@ -578,6 +581,49 @@ export default function BimModelViewer({
     }
     // Dernier recours : la géométrie du floor lui-même, s'il en a une.
     await fitCameraToGlobalId(floorId)
+  }
+
+  // Cadre TOUT le modèle chargé (toutes disciplines/étages confondus), pour
+  // le bouton "Plan" du sélecteur de navigation -- contrairement à
+  // showFloorPlan (plus bas) qui unionne les boîtes d'UN étage résolues via
+  // GUID->localId->box (motif ThatOpen), ici on prend directement la boîte
+  // englobante THREE.js de chaque `model.object` déjà chargé : pas besoin de
+  // connaître la liste des GUID d'un étage en particulier, Box3.setFromObject
+  // parcourt tous les enfants de lui-même.
+  const fitCameraToAllModels = async () => {
+    const world = worldRef.current
+    if (!world || loadedRef.current.length === 0) return
+    const unionBox = new THREE.Box3()
+    for (const { model } of loadedRef.current) {
+      unionBox.union(new THREE.Box3().setFromObject(model.object))
+    }
+    if (unionBox.isEmpty()) return
+    await world.camera.controls.fitToBox(unionBox, false, {
+      paddingTop: 2, paddingLeft: 2, paddingRight: 2, paddingBottom: 2,
+    })
+  }
+
+  // Vue "Plan" générale (pas liée à un étage précis, contrairement à
+  // showFloorPlan) : orthographique, vue du dessus, cadrée sur tout ce qui
+  // est actuellement chargé. Pas de coupe horizontale ajoutée ici (on veut
+  // la silhouette de l'ensemble, pas isoler un seul étage) -- l'utilisateur
+  // qui veut un plan d'étage précis avec coupe passe par "Immersion" ->
+  // sélection d'étage, comme avant.
+  const enterPlanOverview = async () => {
+    const world = worldRef.current
+    if (!world) return
+    clipperRef.current?.deleteAll()
+    if (clipperRef.current) clipperRef.current.enabled = false
+    if (world.camera.projection.current !== 'Orthographic') {
+      await world.camera.projection.set('Orthographic')
+    }
+    world.camera.set('Plan')
+    // Voir le commentaire détaillé sur showFloorPlan : phi=0 place la
+    // caméra au-dessus de la cible (vue du dessus voulue).
+    await world.camera.controls.rotateTo(0, 0, false)
+    await fitCameraToAllModels()
+    setNavMode('Plan')
+    pressedKeysRef.current.clear()
   }
 
   const selectTeleportFloor = async (floorId: string): Promise<boolean> => {
@@ -829,7 +875,7 @@ export default function BimModelViewer({
         try {
           let floors = teleportFloors
           if (floors.length === 0) {
-            const all = await getFloors()
+            const all = await getFloors(zone)
             floors = zone ? all.filter((f) => f.zone === zone) : all
             if (!cancelled) setTeleportFloors(floors)
           }
@@ -914,14 +960,18 @@ export default function BimModelViewer({
   // 'Inconnu' : pas la peine de tenter un fetch/WebSocket voués à un 404.
   const { metrics: selectedMetrics, error: selectedMetricsError } = useEquipmentTelemetry(
     selected && selected.guid !== 'Inconnu' ? selected.guid : null,
+    zone,
   )
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (navMode !== 'FirstPerson') return
-    if (event.code === 'Escape') {
-      exitFirstPerson()
+    // Échap ramène à l'Orbite depuis Immersion OU Plan -- WASD/flèches
+    // (ci-dessous) restent spécifiques à Immersion, Plan n'a pas de
+    // déplacement au clavier.
+    if (event.code === 'Escape' && navMode !== 'Orbit') {
+      enterOrbitMode()
       return
     }
+    if (navMode !== 'FirstPerson') return
     if (!MOVEMENT_KEYS.has(event.code)) return
     event.preventDefault()
     pressedKeysRef.current.add(event.code)
@@ -1141,18 +1191,51 @@ export default function BimModelViewer({
         ))}
       </div>
 
-      <button
-        type="button"
-        title={navMode === 'Orbit' ? 'Choisir une pièce et entrer en immersion (ZQSD/flèches, souris pour regarder)' : 'Revenir à la vue orbite'}
-        onClick={toggleNavMode}
-        style={{
-          position: 'absolute', top: 10, right: 52, height: 32, padding: '0 10px', borderRadius: 6,
-          border: '1px solid #334155', background: navMode === 'FirstPerson' ? '#2563eb' : '#1f2937',
-          color: '#e2e8f0', cursor: 'pointer', fontSize: 12.5, whiteSpace: 'nowrap',
-        }}
-      >
-        {navMode === 'Orbit' ? '🎮 Immersion' : '🖱 Orbite'}
-      </button>
+      {/* Sélecteur de mode de navigation -- Orbite (rotation libre autour du
+          modèle), Immersion/FirstPerson (déplacement à hauteur d'humain,
+          ZQSD/flèches, ouvre d'abord le choix de pièce), Plan (vue
+          orthographique du dessus, proportions exactes). Chaque bouton
+          bascule directement dans son mode, sauf Immersion qui ouvre le
+          sélecteur de pièce (comportement déjà existant, conservé car utile
+          pour se téléporter précisément). */}
+      <div style={{ position: 'absolute', top: 10, right: 52, display: 'flex', gap: 4 }}>
+        <button
+          type="button"
+          title="Orbite -- rotation libre autour du modèle"
+          onClick={enterOrbitMode}
+          style={{
+            height: 32, padding: '0 10px', borderRadius: 6,
+            border: '1px solid #334155', background: navMode === 'Orbit' ? '#2563eb' : '#1f2937',
+            color: '#e2e8f0', cursor: 'pointer', fontSize: 12.5, whiteSpace: 'nowrap',
+          }}
+        >
+          🖱 Orbite
+        </button>
+        <button
+          type="button"
+          title="Immersion -- choisir une pièce et se déplacer à hauteur d'humain (ZQSD/flèches, souris pour regarder)"
+          onClick={openModeChoice}
+          style={{
+            height: 32, padding: '0 10px', borderRadius: 6,
+            border: '1px solid #334155', background: navMode === 'FirstPerson' ? '#2563eb' : '#1f2937',
+            color: '#e2e8f0', cursor: 'pointer', fontSize: 12.5, whiteSpace: 'nowrap',
+          }}
+        >
+          🎮 Immersion
+        </button>
+        <button
+          type="button"
+          title="Plan -- vue orthographique du dessus, proportions exactes"
+          onClick={enterPlanOverview}
+          style={{
+            height: 32, padding: '0 10px', borderRadius: 6,
+            border: '1px solid #334155', background: navMode === 'Plan' ? '#2563eb' : '#1f2937',
+            color: '#e2e8f0', cursor: 'pointer', fontSize: 12.5, whiteSpace: 'nowrap',
+          }}
+        >
+          📐 Plan
+        </button>
+      </div>
 
       <button
         type="button"

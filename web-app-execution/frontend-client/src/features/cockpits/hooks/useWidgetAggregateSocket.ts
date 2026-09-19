@@ -35,6 +35,8 @@ export type WidgetAggregateParams = {
   dataTypes: string[]
   bucketSeconds: number
   startMs?: number
+  endMs?: number
+  zone: string
 }
 
 const MAX_BACKOFF_MS = 30_000
@@ -51,7 +53,9 @@ function websocketUrl(p: WidgetAggregateParams): string {
     calcul: p.calcul,
     data_types: p.dataTypes.join(','),
     bucket_seconds: String(p.bucketSeconds),
+    zone: p.zone,
     ...(p.startMs ? { start_ms: String(p.startMs) } : {}),
+    ...(p.endMs ? { end_ms: String(p.endMs) } : {}),
   })
   return `${wsBase}/api/bim/ws/widget-aggregate?${query.toString()}`
 }
@@ -78,6 +82,8 @@ export function useWidgetAggregateSocket(
         params.dataTypes.join(','),
         params.bucketSeconds,
         params.startMs ?? '',
+        params.endMs ?? '',
+        params.zone,
       ].join('|')
     : null
 

@@ -12,10 +12,13 @@ import {
   getRoomsByFloor,
   getRoomsByTypology,
   getTypologies,
+  type EquipmentCategoryScope,
   type Floor,
   type Typology,
   type TypologyRoom,
 } from '../bim/services/arcadeApi'
+import { availableMetricsForScope } from './utils/metrics'
+import { formatPeriodLabel } from './utils/period'
 import WidgetBlock from './components/WidgetBlock'
 import WidgetSettingsPanel from './components/WidgetSettingsPanel'
 import { createCockpit, updateCockpit, type CockpitInput } from './services/cockpitApi'
@@ -65,9 +68,17 @@ const WIDGET_TYPE_OPTIONS: { value: WidgetType; label: string }[] = [
 export default function CockpitBuilder({
   zone, buildingId, buildingLabel, seed, seedMeta, currentUsername, onBack, onSaved,
 }: Props) {
-  const [composition, setComposition] = useState<CockpitComposition>(seed)
+  // `period.offset` est un ajout récent (pagination "Mois précédent/suivant")
+  // -- un cockpit sauvegardé avant cet ajout n'en a pas dans son JSON malgré
+  // le typage TypeScript (persisté tel quel en JSONB, non validé au chargement),
+  // d'où la normalisation explicite ici plutôt que des `?? 0` disséminés.
+  const [composition, setComposition] = useState<CockpitComposition>({
+    ...seed,
+    period: { ...seed.period, offset: seed.period.offset ?? 0 },
+  })
   const [editingWidgetId, setEditingWidgetId] = useState<string | null>(null)
-  const [availableCategories, setAvailableCategories] = useState<string[]>([])
+  const [scope, setScope] = useState<EquipmentCategoryScope[]>([])
+  const availableCategories = scope.map((c) => c.category).filter((c) => c !== '_unknown')
   const [floors, setFloors] = useState<Floor[]>([])
   const [typologies, setTypologies] = useState<Typology[]>([])
   const [floorRooms, setFloorRooms] = useState<TypologyRoom[]>([])
@@ -86,12 +97,12 @@ export default function CockpitBuilder({
   // jamais une liste statique.
   useEffect(() => {
     let cancelled = false
-    getEquipmentScope(composition.space.ids)
+    getEquipmentScope(zone, composition.space.ids)
       .then((cats) => {
-        if (!cancelled) setAvailableCategories(cats.map((c) => c.category).filter((c) => c !== '_unknown'))
+        if (!cancelled) setScope(cats)
       })
       .catch(() => {
-        if (!cancelled) setAvailableCategories([])
+        if (!cancelled) setScope([])
       })
     return () => {
       cancelled = true
@@ -100,7 +111,7 @@ export default function CockpitBuilder({
 
   useEffect(() => {
     getFloors(zone).then(setFloors).catch(() => setFloors([]))
-    getTypologies(buildingId).then(setTypologies).catch(() => setTypologies([]))
+    getTypologies(zone, buildingId).then(setTypologies).catch(() => setTypologies([]))
   }, [zone, buildingId])
 
   useEffect(() => {
@@ -108,8 +119,8 @@ export default function CockpitBuilder({
       setFloorRooms([])
       return
     }
-    getRoomsByFloor(selectedFloorForRooms).then(setFloorRooms).catch(() => setFloorRooms([]))
-  }, [selectedFloorForRooms])
+    getRoomsByFloor(zone, selectedFloorForRooms).then(setFloorRooms).catch(() => setFloorRooms([]))
+  }, [selectedFloorForRooms, zone])
 
   const updateSpaceLevel = (level: SpaceLevel) => {
     if (level === 'batiment') {
@@ -133,7 +144,7 @@ export default function CockpitBuilder({
       return
     }
     try {
-      const rooms = await getRoomsByTypology(buildingId, name)
+      const rooms = await getRoomsByTypology(zone, buildingId, name)
       setComposition((c) => ({
         ...c,
         space: { level: 'typologie', ids: rooms.map((r) => r.room_id), label: name, typologyName: name },
@@ -149,7 +160,13 @@ export default function CockpitBuilder({
   }
 
   const addWidget = (type: WidgetType) => {
-    setComposition((c) => ({ ...c, widgets: [...c.widgets, defaultWidget(type)] }))
+    // DEFAULT_METRIC ("power_instant_kw") ne correspond à rien tant qu'un
+    // bâtiment n'a pas de compteur électrique réel -- un nouveau widget doit
+    // partir sur une métrique qui a RÉELLEMENT des données pour l'espace
+    // courant plutôt que de forcer l'utilisateur à rouvrir les réglages à
+    // chaque ajout (frustration remontée : "j'ai rien sur les barres").
+    const firstRealMetric = availableMetricsForScope(scope, []).at(0)?.name
+    setComposition((c) => ({ ...c, widgets: [...c.widgets, defaultWidget(type, firstRealMetric)] }))
   }
 
   const removeWidget = (id: string) => {
@@ -211,11 +228,32 @@ export default function CockpitBuilder({
                 key={opt.value} type="button"
                 className={composition.period.preset === opt.value ? 'btn btn-primary' : 'btn btn-secondary'}
                 style={{ padding: '5px 10px', fontSize: 12 }}
-                onClick={() => setComposition((c) => ({ ...c, period: { preset: opt.value } }))}
+                onClick={() => setComposition((c) => ({ ...c, period: { preset: opt.value, offset: 0 } }))}
               >
                 {opt.label}
               </button>
             ))}
+          </div>
+          {/* Navigation calendaire ("Mois précédent/suivant" etc.) --
+              `offset` ne va jamais au-delà de 0 (pas de navigation dans le
+              futur) ; remis à 0 dès qu'on change de préréglage ci-dessus. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+            <button
+              type="button" className="btn btn-secondary" style={{ padding: '3px 8px', fontSize: 11 }}
+              onClick={() => setComposition((c) => ({ ...c, period: { ...c.period, offset: c.period.offset - 1 } }))}
+            >
+              ‹ Précédent
+            </button>
+            <span style={{ fontSize: 11, color: 'var(--text)', minWidth: 90, textAlign: 'center' }}>
+              {formatPeriodLabel(composition.period.preset, composition.period.offset)}
+            </span>
+            <button
+              type="button" className="btn btn-secondary" style={{ padding: '3px 8px', fontSize: 11 }}
+              disabled={composition.period.offset >= 0}
+              onClick={() => setComposition((c) => ({ ...c, period: { ...c.period, offset: Math.min(0, c.period.offset + 1) } }))}
+            >
+              Suivant ›
+            </button>
           </div>
         </div>
 
@@ -282,7 +320,8 @@ export default function CockpitBuilder({
               key={widget.id}
               widget={widget}
               space={composition.space}
-              period={composition.period.preset}
+              period={composition.period}
+              zone={zone}
               onEdit={() => setEditingWidgetId(widget.id)}
               onRemove={() => removeWidget(widget.id)}
             />
@@ -314,8 +353,9 @@ export default function CockpitBuilder({
           >
             <WidgetSettingsPanel
               widget={editingWidget}
-              availableCategories={availableCategories}
+              scope={scope}
               spaceIds={composition.space.ids}
+              zone={zone}
               onChange={(next) => updateWidget(editingWidget.id, next)}
               onClose={() => setEditingWidgetId(null)}
             />

@@ -29,6 +29,8 @@ from database import engine, get_db, Base
 from models import PhaseModel, CockpitModel
 from schemas import CockpitIn
 import bim_proxy
+import maintenance
+import occupancy
 import nats_bridge
 import aggregation_bridge
 from security import get_current_user, verify_allowed_roles, verify_execution_allowed_roles
@@ -59,6 +61,8 @@ app.add_middleware(
 # Dépendances RBAC (JWT Keycloak) : voir security.py — extrait de ce fichier
 # pour être réutilisable par bim_proxy.py sans import circulaire.
 app.include_router(bim_proxy.router)
+app.include_router(maintenance.router)
+app.include_router(occupancy.router)
 
 
 @app.on_event("startup")

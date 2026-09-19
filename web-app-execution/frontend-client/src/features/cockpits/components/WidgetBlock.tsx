@@ -17,12 +17,11 @@ import {
   getLocationSummary,
   type ReadingPoint,
 } from '../../bim/services/arcadeApi'
-import { categoryLabel, type CockpitSpace, type CockpitWidget } from '../types'
+import { categoryLabel, type CockpitPeriod, type CockpitSpace, type CockpitWidget } from '../types'
 import { useChartInstance } from '../utils/useChartInstance'
-import { intervalToBucketSeconds, periodStartMs } from '../utils/period'
+import { intervalToBucketSeconds, periodRange } from '../utils/period'
 import { computeTypicalWeek } from '../utils/typicalWeek'
 import { useWidgetAggregateSocket, type WidgetAggregatePayload } from '../hooks/useWidgetAggregateSocket'
-import type { PeriodPreset } from '../types'
 
 const FLOOR_COLORS = ['#38bdf8', '#a3e635', '#fbbf24', '#f472b6', '#c084fc', '#fb923c']
 // Mode "équipement ciblé" du widget Indicateur uniquement (effet dédié plus
@@ -32,14 +31,15 @@ const REFRESH_MS = 30_000
 type Props = {
   widget: CockpitWidget
   space: CockpitSpace
-  period: PeriodPreset
+  period: CockpitPeriod
+  zone: string
   onEdit: () => void
   onRemove: () => void
 }
 
 type BarDatum = { label: string; value: number }
 
-export default function WidgetBlock({ widget, space, period, onEdit, onRemove }: Props) {
+export default function WidgetBlock({ widget, space, period, zone, onEdit, onRemove }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [unit, setUnit] = useState('')
@@ -58,11 +58,16 @@ export default function WidgetBlock({ widget, space, period, onEdit, onRemove }:
   const dataTypesKey = widget.dataTypes.join(',')
 
   // Calculés une seule fois par changement d'intervalle/période (pas à
-  // chaque rendu -- periodStartMs(Date.now()) changerait sinon à chaque
-  // rendu du composant, ce qui ferait reconnecter la websocket d'agrégation
-  // ci-dessous en boucle, voir sa dépendance `key`).
+  // chaque rendu -- periodRange(Date.now()) changerait sinon à chaque rendu
+  // du composant, ce qui ferait reconnecter la websocket d'agrégation
+  // ci-dessous en boucle, voir sa dépendance `key`). Bornage CALENDAIRE
+  // (jour/semaine/mois/année civils, voir period.ts) : `offset` permet la
+  // pagination "Mois précédent/suivant" du haut de page (CockpitBuilder.tsx).
   const bucketSeconds = useMemo(() => intervalToBucketSeconds(widget.interval), [widget.interval])
-  const startMs = useMemo(() => periodStartMs(period), [period])
+  const { startMs, endMs } = useMemo(
+    () => periodRange(period.preset, period.offset ?? 0),
+    [period.preset, period.offset],
+  )
 
   // Applique un résultat déjà résolu à l'état affiché -- factorisé pour être
   // appelé À LA FOIS par le fetch REST initial (refresh(), ci-dessous) ET par
@@ -109,14 +114,14 @@ export default function WidgetBlock({ widget, space, period, onEdit, onRemove }:
         if (widget.type === 'indicateur') {
           const dataTypes = widget.dataTypes.length ? widget.dataTypes : [undefined]
           const results = await Promise.all(
-            dataTypes.map((dt) => getLocationSummary(space.ids, widget.metric, widget.calcul, dt, startMs)),
+            dataTypes.map((dt) => getLocationSummary(zone, space.ids, widget.metric, widget.calcul, dt, startMs, endMs)),
           )
           if (cancelled) return
           const total = results.reduce((sum, r) => sum + (r.value ?? 0), 0)
           applyIndicator(Math.round(total * 100) / 100, results.find((r) => r.unit)?.unit ?? '')
         } else if (widget.type === 'barres' || widget.type === 'camembert') {
           if (space.level === 'batiment') {
-            const consumption = await getBuildingConsumption(space.ids[0], widget.metric, singleCategory)
+            const consumption = await getBuildingConsumption(zone, space.ids[0], widget.metric, singleCategory)
             if (cancelled) return
             applyBars(consumption.by_floor.map((f) => ({ label: f.floor_name, value: f.value })), consumption.unit)
           } else {
@@ -124,7 +129,7 @@ export default function WidgetBlock({ widget, space, period, onEdit, onRemove }:
             const results = await Promise.all(
               dataTypes.map(async (dt) => ({
                 label: dt === '_all' ? 'Tous types' : categoryLabel(dt),
-                summary: await getLocationSummary(space.ids, widget.metric, widget.calcul, dt === '_all' ? undefined : dt, startMs),
+                summary: await getLocationSummary(zone, space.ids, widget.metric, widget.calcul, dt === '_all' ? undefined : dt, startMs, endMs),
               })),
             )
             if (cancelled) return
@@ -139,7 +144,8 @@ export default function WidgetBlock({ widget, space, period, onEdit, onRemove }:
             dataTypes.map(async (dt) => ({
               label: dt === '_all' ? widget.title : categoryLabel(dt),
               points: await getLocationReadings(
-                space.ids, widget.metric, bucketSeconds, dt === '_all' ? undefined : dt, widget.calcul,
+                zone, space.ids, widget.metric, bucketSeconds, dt === '_all' ? undefined : dt, widget.calcul,
+                undefined, startMs, endMs,
               ),
             })),
           )
@@ -151,7 +157,7 @@ export default function WidgetBlock({ widget, space, period, onEdit, onRemove }:
           // période affichée ailleurs dans le cockpit -- fenêtre fixe de 8
           // semaines, bucket 1h, raw_limit relevé pour couvrir ce volume.
           const points = await getLocationReadings(
-            space.ids, widget.metric, 3600, singleCategory, widget.calcul, 20000,
+            zone, space.ids, widget.metric, 3600, singleCategory, widget.calcul, 20000,
           )
           if (cancelled) return
           const typical = computeTypicalWeek(points)
@@ -173,7 +179,7 @@ export default function WidgetBlock({ widget, space, period, onEdit, onRemove }:
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [widget.type, widget.metric, widget.calcul, widget.interval, widget.targetEquipmentId, dataTypesKey, space.level, space.ids.join(','), period, bucketSeconds, startMs])
+  }, [widget.type, widget.metric, widget.calcul, widget.interval, widget.targetEquipmentId, dataTypesKey, space.level, space.ids.join(','), period.preset, period.offset, bucketSeconds, startMs, endMs, zone])
 
   // Mises à jour poussées : dès qu'un équipement du périmètre du widget
   // publie une nouvelle mesure sur NATS, la gateway rappelle en interne le
@@ -192,6 +198,8 @@ export default function WidgetBlock({ widget, space, period, onEdit, onRemove }:
         dataTypes: widget.dataTypes,
         bucketSeconds,
         startMs,
+        endMs,
+        zone,
       }
     : null
 
@@ -257,7 +265,25 @@ export default function WidgetBlock({ widget, space, period, onEdit, onRemove }:
   const hasData = space.ids.length > 0 || !!widget.targetEquipmentId
   const isBarLike = widget.type === 'barres' || widget.type === 'semaine_type'
   const isDonut = widget.type === 'camembert'
-  const isLine = widget.type === 'courbe'
+  // Widget 'courbe' : Ligne (historique classique) ou Barres groupées par
+  // bucket -- même données (lineDatasets), juste un autre style de tracé
+  // Chart.js (façon "Répartition Énergies" : une barre par catégorie et par
+  // jour, pas une valeur agrégée unique comme le widget 'barres' classique).
+  const isCourbeBars = widget.type === 'courbe' && widget.chartStyle === 'barres'
+  const isLine = widget.type === 'courbe' && !isCourbeBars
+
+  // Un bucket d'un jour ou plus (pagination "Mois précédent/suivant" avec
+  // intervalle "Jour") : la portion HEURE de `ts` est toujours "00:00", donc
+  // on affiche la date à la place -- sinon l'axe des abscisses serait
+  // illisible (une série de "00:00" identiques).
+  const formatTick = (ts: string): string => {
+    const [datePart, timePart] = ts.split(' ')
+    if (bucketSeconds >= 86400) {
+      const [, month, day] = datePart.split('-')
+      return `${day}/${month}`
+    }
+    return timePart?.slice(0, 5) ?? ts
+  }
 
   useChartInstance(
     canvasRef,
@@ -295,9 +321,39 @@ export default function WidgetBlock({ widget, space, period, onEdit, onRemove }:
           },
         }
       }
+      if (isCourbeBars && lineDatasets) {
+        const palette = FLOOR_COLORS
+        const labels = lineDatasets[0]?.points.map((p) => formatTick(p.ts)) ?? []
+        return {
+          type: 'bar',
+          data: {
+            labels,
+            datasets: lineDatasets.map((ds, i) => ({
+              label: ds.label, data: ds.points.map((p) => p.value),
+              backgroundColor: palette[i % palette.length],
+              borderRadius: 3,
+            })),
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false, animation: false,
+            plugins: {
+              legend: { display: lineDatasets.length > 1, labels: { color: '#9ca3af', font: { size: 9 } } },
+              tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.formattedValue} ${unit}` } },
+            },
+            scales: {
+              // stacked: true sur les deux axes -- une seule barre empilée
+              // par jour/bucket (une portion par catégorie), pas des barres
+              // groupées côte à côte, pour matcher le rendu visé (façon
+              // "Répartition Énergies").
+              x: { stacked: true, ticks: { color: '#9ca3af', font: { size: 9 }, maxRotation: 45, minRotation: 0 }, grid: { display: false } },
+              y: { stacked: true, ticks: { color: '#9ca3af', font: { size: 9 } }, grid: { color: 'rgba(156,163,175,0.15)' } },
+            },
+          },
+        }
+      }
       if (isLine && lineDatasets) {
         const palette = FLOOR_COLORS
-        const labels = lineDatasets[0]?.points.map((p) => p.ts.split(' ')[1]?.slice(0, 5) ?? p.ts) ?? []
+        const labels = lineDatasets[0]?.points.map((p) => formatTick(p.ts)) ?? []
         return {
           type: 'line',
           data: {
@@ -324,7 +380,7 @@ export default function WidgetBlock({ widget, space, period, onEdit, onRemove }:
       }
       return null
     },
-    [barData, lineDatasets, unit, isBarLike, isDonut, isLine],
+    [barData, lineDatasets, unit, isBarLike, isDonut, isLine, isCourbeBars, bucketSeconds],
   )
 
   return (

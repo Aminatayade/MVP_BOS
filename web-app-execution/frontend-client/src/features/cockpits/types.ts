@@ -21,6 +21,12 @@ export type Interval = 'heure' | 'jour' | 'semaine' | 'mois'
 
 export type DisplayUnit = 'raw' | 'per_m2'
 
+// Widget 'courbe' uniquement : dessiner les mêmes séries temporelles en
+// lignes (historique) ou en barres groupées par jour/bucket (façon
+// "Répartition Énergies" -- une barre par catégorie et par pas de temps,
+// pas une valeur agrégée unique comme le widget 'barres' classique).
+export type ChartStyle = 'ligne' | 'barres'
+
 export interface CockpitSpace {
   level: SpaceLevel
   ids: string[] // 1 id sauf typologie (N room ids résolus via getRoomsByTypology)
@@ -30,6 +36,11 @@ export interface CockpitSpace {
 
 export interface CockpitPeriod {
   preset: PeriodPreset
+  // Décalage en unités calendaires entières par rapport à la période en
+  // cours (0 = en cours, -1 = précédente...) -- jamais positif, voir
+  // period.ts. Absent sur un cockpit sauvegardé avant cet ajout : traité
+  // comme 0 partout où il est lu (voir `?? 0`).
+  offset: number
 }
 
 export interface CockpitWidget {
@@ -44,6 +55,10 @@ export interface CockpitWidget {
   // Widgets 'indicateur' uniquement, tous deux optionnels/indépendants :
   target?: number | null // objectif/budget -- affiche l'écart en % sous la valeur
   targetEquipmentId?: string | null // équipement précis ciblé -- remplace la lecture par espace (space.ids)
+  // Widget 'courbe' uniquement -- absent sur les autres types et sur les
+  // cockpits sauvegardés avant cet ajout (traité comme 'ligne' partout où
+  // il est lu, voir `?? 'ligne'`).
+  chartStyle?: ChartStyle
 }
 
 export interface CockpitComposition {
@@ -90,7 +105,7 @@ export const DEFAULT_METRIC = 'power_instant_kw'
 export function defaultComposition(spaceLevel: SpaceLevel, spaceIds: string[], spaceLabel: string): CockpitComposition {
   return {
     version: 1,
-    period: { preset: 'semaine' },
+    period: { preset: 'semaine', offset: 0 },
     comparePeriods: [],
     space: { level: spaceLevel, ids: spaceIds, label: spaceLabel, typologyName: null },
     widgets: [],
@@ -106,6 +121,7 @@ export function defaultWidget(type: WidgetType, metric = DEFAULT_METRIC): Cockpi
     id: makeWidgetId(), type, title: titles[type], metric,
     dataTypes: [], calcul: 'sum', interval: type === 'courbe' || type === 'semaine_type' ? 'heure' : 'jour',
     unit: 'raw', target: null, targetEquipmentId: null,
+    chartStyle: type === 'courbe' ? 'ligne' : undefined,
   }
 }
 
@@ -119,7 +135,7 @@ export function defaultWidget(type: WidgetType, metric = DEFAULT_METRIC): Cockpi
 export function legacySeed(buildingId: string, buildingLabel: string): CockpitComposition {
   return {
     version: 1,
-    period: { preset: 'semaine' },
+    period: { preset: 'semaine', offset: 0 },
     comparePeriods: [],
     space: { level: 'batiment', ids: [buildingId], label: buildingLabel, typologyName: null },
     widgets: [

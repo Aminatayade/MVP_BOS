@@ -34,6 +34,7 @@ from application.live_simulation_service import DEFAULT_SUBJECT, LivePublisher, 
 from consume_timeseries import run_consumer
 from infrastructure.adapters.arcadedb_repository_adapter import ArcadeDbRepositoryAdapter
 from infrastructure.secrets import read_secret
+from infrastructure.zone_database import resolve_database_for_zone
 
 
 def _build_repository() -> ArcadeDbTimeseriesAdapter:
@@ -45,13 +46,35 @@ def _build_repository() -> ArcadeDbTimeseriesAdapter:
     )
 
 
-def _build_graph_repository() -> ArcadeDbRepositoryAdapter:
-    return ArcadeDbRepositoryAdapter(
-        base_url=os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480"),
-        database=os.environ.get("ARCADEDB_DATABASE", "bim"),
-        username=os.environ.get("ARCADEDB_USERNAME", "root"),
-        password=read_secret("ARCADEDB_PASSWORD", "testBIM123"),
-    )
+def _graph_repo_factory():
+    def factory(database: str) -> ArcadeDbRepositoryAdapter:
+        return ArcadeDbRepositoryAdapter(
+            base_url=os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480"),
+            database=database,
+            username=os.environ.get("ARCADEDB_USERNAME", "root"),
+            password=read_secret("ARCADEDB_PASSWORD", "testBIM123"),
+        )
+    return factory
+
+
+def _build_graph_repository(zone: str | None = None) -> ArcadeDbRepositoryAdapter:
+    """Ce fichier interrogeait jusqu'ici TOUJOURS la base ArcadeDB partagée
+    historique (ARCADEDB_DATABASE, "bim" par défaut) pour le GRAPHE -- correct
+    pour une zone legacy (ex: Batipompe) mais faux pour toute zone créée
+    depuis l'isolation par zone (Phase 1), qui a sa PROPRE base : un
+    équipement fraîchement ingéré dans une zone neuve devenait introuvable ici
+    (404 "Equipment introuvable"), alors même que son historique simulé
+    existait bel et bien (le magasin timeseries, lui, reste bien partagé/
+    inchangé). Résolution obligatoire par zone désormais, comme partout
+    ailleurs dans api_server.py -- repli sur l'env var seulement si aucune
+    zone n'est fournie (compat ascendante d'éventuels appelants internes)."""
+    factory = _graph_repo_factory()
+    if zone:
+        database = resolve_database_for_zone(factory, zone, for_write=False)
+        if database is None:
+            raise HTTPException(status_code=404, detail=f"Zone '{zone}' inconnue.")
+        return factory(database)
+    return factory(os.environ.get("ARCADEDB_DATABASE", "bim"))
 
 
 def _build_catalog() -> JsonEquipmentCatalogAdapter:
@@ -158,14 +181,20 @@ def get_readings(
 
 
 @app.get("/timeseries/equipment-summary")
-def get_equipment_summary(global_id: str, history_limit: int = 50) -> dict:
+def get_equipment_summary(global_id: str, zone: str | None = None, history_limit: int = 50) -> dict:
     """Valeur courante + historique récent, groupés par métrique, pour le
     popup graphe (nœud Equipment). Les métriques attendues viennent du
     catalogue de simulation, résolu via `equipment_type` déjà stocké sur le
     nœud graphe à l'ingestion -- pas une découverte a posteriori dans
     EquipmentReading, pour pouvoir répondre `metrics: []` correctement même
-    si le backfill (best-effort, en tâche de fond) n'est pas encore passé."""
-    graph_repo = _build_graph_repository()
+    si le backfill (best-effort, en tâche de fond) n'est pas encore passé.
+
+    `zone` optionnel (repli sur la base legacy "bim" si absent) pour rester
+    compatible avec d'éventuels appelants existants, mais DOIT être fourni
+    pour tout équipement d'une zone qui a sa propre base ArcadeDB (voir
+    _build_graph_repository) -- sinon 404 "introuvable" même si l'équipement
+    existe bel et bien, juste pas dans "bim"."""
+    graph_repo = _build_graph_repository(zone)
     escaped_gid = global_id.replace("\\", "\\\\").replace("'", "\\'")
     try:
         graph_resp = graph_repo.query_sql(
@@ -227,8 +256,15 @@ def _fetch_zone_equipment(zone: str) -> list[tuple[str, str]]:
     bim_graph_ingestion_service.py), donc une simple égalité suffit : pas
     besoin de résoudre un Building/traverser HAS_CHILD*0.. comme le fait
     /graph/equipment-list (qui, lui, part d'un périmètre spatial arbitraire,
-    pas d'une zone entière connue à l'avance)."""
-    repo = _build_graph_repository()
+    pas d'une zone entière connue à l'avance).
+
+    `_build_graph_repository(zone)` résout la bonne base -- sans ça, une
+    zone ayant sa propre base ArcadeDB (toute zone créée depuis l'isolation
+    par zone, Phase 1) renvoyait silencieusement 0 équipement ici (la
+    requête tapait "bim" où cette zone n'a jamais rien eu), rendant la
+    simulation live inutilisable pour ces zones. Le filtre `WHERE zone = ...`
+    reste utile pour une zone legacy partageant "bim" avec d'autres zones."""
+    repo = _build_graph_repository(zone)
     escaped_zone = zone.replace("\\", "\\\\").replace("'", "\\'")
     response = repo.query_sql(
         f"SELECT global_id, equipment_type FROM Equipment "

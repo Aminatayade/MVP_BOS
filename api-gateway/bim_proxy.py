@@ -212,6 +212,23 @@ async def graph_equipment(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/equipment", request, SHORT_TIMEOUT)
 
 
+# Ouvert aussi au rôle Client : alimente le menu déroulant de zone dans les
+# deux frontends (BimExplorer.tsx côté Configurateur, BimViewer.tsx côté
+# Exécution) -- isolation par zone Phase 1, voir /graph/zones côté bim_api.
+@router.get("/graph/zones", dependencies=[Depends(verify_execution_allowed_roles)])
+async def graph_zones(request: Request):
+    return await _forward_get(BIM_API_INTERNAL_URL, "/graph/zones", request, SHORT_TIMEOUT)
+
+
+# LONG_TIMEOUT (pas SHORT) : le premier appel sur une zone avec de vraies
+# Room provisionne des capteurs de présence simulés + backfill leur
+# historique (voir occupancy_provisioning_service.py côté bim_api) --
+# nettement plus lent qu'une simple lecture de graphe.
+@router.get("/graph/occupancy-dashboard", dependencies=[Depends(verify_execution_allowed_roles)])
+async def graph_occupancy_dashboard(request: Request):
+    return await _forward_get(BIM_API_INTERNAL_URL, "/graph/occupancy-dashboard", request, LONG_TIMEOUT)
+
+
 @router.get("/graph/neighbors", dependencies=[Depends(verify_allowed_roles)])
 async def graph_neighbors(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/neighbors", request, SHORT_TIMEOUT)
@@ -412,7 +429,8 @@ async def ws_widget_aggregate(websocket: WebSocket):
     Paramètres de requête (mêmes valeurs que WidgetBlock.tsx calcule déjà
     pour son appel REST initial -- jamais recalculés côté serveur) :
       token, widget_type, space_ids (csv), space_level, metric, calcul,
-      data_types (csv, facultatif), bucket_seconds, start_ms (facultatif).
+      data_types (csv, facultatif), bucket_seconds, start_ms/end_ms
+      (facultatifs -- bornage calendaire, pagination "Mois précédent/suivant").
 
     Auth identique à ws_equipment_telemetry (token en query param, le
     navigateur ne pouvant pas poser de header Authorization sur un handshake
@@ -440,8 +458,11 @@ async def ws_widget_aggregate(websocket: WebSocket):
     bucket_seconds = int(params.get("bucket_seconds") or 300)
     start_ms_raw = params.get("start_ms")
     start_ms = int(start_ms_raw) if start_ms_raw else None
+    end_ms_raw = params.get("end_ms")
+    end_ms = int(end_ms_raw) if end_ms_raw else None
+    zone = params.get("zone", "")
 
-    if not widget_type or not space_ids or not metric:
+    if not widget_type or not space_ids or not metric or not zone:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
@@ -453,7 +474,7 @@ async def ws_widget_aggregate(websocket: WebSocket):
     # aggregation_bridge.py), jamais à calculer la valeur elle-même (ça reste
     # le rôle des endpoints /graph/location-readings* rappelés ci-dessous).
     try:
-        equipment_ids = await widget_aggregate.resolve_equipment_ids(space_ids)
+        equipment_ids = await widget_aggregate.resolve_equipment_ids(space_ids, zone)
     except Exception:
         equipment_ids = set()
 
@@ -470,6 +491,8 @@ async def ws_widget_aggregate(websocket: WebSocket):
                 data_types=data_types,
                 bucket_seconds=bucket_seconds,
                 start_ms=start_ms,
+                end_ms=end_ms,
+                zone=zone,
             )
         except Exception as exc:
             print(f"⚠️  Recalcul widget-aggregate en échec : {exc}")

@@ -109,13 +109,14 @@ export interface BuildingConsumption {
  * seul cas où le découpage "par étage" renvoyé est exploitable tel quel.
  */
 export async function getBuildingConsumption(
+  zone: string,
   buildingId: string,
   metric = 'power_instant_kw',
   category?: string,
 ): Promise<BuildingConsumption> {
   try {
     const resp = await apiClient.get('/api/bim/graph/building-consumption', {
-      params: { global_id: buildingId, metric, ...(category ? { category } : {}) },
+      params: { global_id: buildingId, metric, zone, ...(category ? { category } : {}) },
     })
     return resp.data as BuildingConsumption
   } catch (error) {
@@ -135,12 +136,15 @@ export interface ReadingPoint {
  * (constructeur de cockpits).
  */
 export async function getLocationReadings(
+  zone: string,
   locationIds: string[],
   metric = 'power_instant_kw',
   bucketSeconds = 300,
   category?: string,
   aggregation?: string,
   rawLimit?: number,
+  startMs?: number,
+  endMs?: number,
 ): Promise<ReadingPoint[]> {
   try {
     const resp = await apiClient.get('/api/bim/graph/location-readings', {
@@ -148,9 +152,12 @@ export async function getLocationReadings(
         global_id: locationIds.join(','),
         metric,
         bucket_seconds: bucketSeconds,
+        zone,
         ...(category ? { category } : {}),
         ...(aggregation ? { aggregation } : {}),
         ...(rawLimit ? { raw_limit: rawLimit } : {}),
+        ...(startMs ? { start: startMs } : {}),
+        ...(endMs ? { end: endMs } : {}),
       },
     })
     return (resp.data.readings ?? []) as ReadingPoint[]
@@ -179,6 +186,7 @@ export interface LocationSummary {
  * ArcadeDB (SUM/AVG/MAX/MIN), voir /graph/location-readings-summary.
  */
 export async function getLocationSummary(
+  zone: string,
   locationIds: string[],
   metric: string,
   aggregation: 'sum' | 'avg' | 'max' | 'min' = 'sum',
@@ -192,6 +200,7 @@ export async function getLocationSummary(
         global_id: locationIds.join(','),
         metric,
         aggregation,
+        zone,
         ...(category ? { category } : {}),
         ...(startMs ? { start: startMs } : {}),
         ...(endMs ? { end: endMs } : {}),
@@ -207,6 +216,10 @@ export interface EquipmentCategoryScope {
   category: string
   equipment_count: number
   equipment_types: { equipment_type: string | null; count: number }[]
+  // Métriques RÉELLEMENT simulées pour cette catégorie (union sur ses
+  // equipment_types) -- jamais une liste statique, voir
+  // JsonEquipmentCatalogAdapter côté bim_api.
+  metrics: { name: string; unit: string }[]
 }
 
 /**
@@ -214,10 +227,10 @@ export interface EquipmentCategoryScope {
  * d'équipement RÉELLEMENT présentes sous le périmètre spatial donné --
  * jamais une liste statique. Voir /graph/equipment-scope côté bim_api.
  */
-export async function getEquipmentScope(locationIds: string[]): Promise<EquipmentCategoryScope[]> {
+export async function getEquipmentScope(zone: string, locationIds: string[]): Promise<EquipmentCategoryScope[]> {
   try {
     const resp = await apiClient.get('/api/bim/graph/equipment-scope', {
-      params: { global_id: locationIds.join(',') },
+      params: { global_id: locationIds.join(','), zone },
     })
     return (resp.data.categories ?? []) as EquipmentCategoryScope[]
   } catch (error) {
@@ -237,10 +250,10 @@ export interface EquipmentListItem {
  * alimente le sélecteur "cibler un équipement précis" du widget Indicateur.
  * Voir /graph/equipment-list côté bim_api.
  */
-export async function getEquipmentList(locationIds: string[]): Promise<EquipmentListItem[]> {
+export async function getEquipmentList(zone: string, locationIds: string[]): Promise<EquipmentListItem[]> {
   try {
     const resp = await apiClient.get('/api/bim/graph/equipment-list', {
-      params: { global_id: locationIds.join(',') },
+      params: { global_id: locationIds.join(','), zone },
     })
     return (resp.data.equipment ?? []) as EquipmentListItem[]
   } catch (error) {
@@ -288,10 +301,10 @@ export interface Typology {
  * bâtiment, unionnées à travers tous les étages (voir /graph/typologies,
  * un nœud Typology existe PAR ÉTAGE côté graphe).
  */
-export async function getTypologies(buildingId: string): Promise<Typology[]> {
+export async function getTypologies(zone: string, buildingId: string): Promise<Typology[]> {
   try {
     const resp = await apiClient.get('/api/bim/graph/typologies', {
-      params: { global_id: buildingId },
+      params: { global_id: buildingId, zone },
     })
     return (resp.data.typologies ?? []) as Typology[]
   } catch (error) {
@@ -311,10 +324,10 @@ export interface TypologyRoom {
  * le constructeur de cockpits passe ensuite `rooms.map(r => r.room_id)`
  * comme `space.ids` aux endpoints de lecture (déjà multi-id).
  */
-export async function getRoomsByTypology(buildingId: string, name: string): Promise<TypologyRoom[]> {
+export async function getRoomsByTypology(zone: string, buildingId: string, name: string): Promise<TypologyRoom[]> {
   try {
     const resp = await apiClient.get('/api/bim/graph/rooms-by-typology', {
-      params: { global_id: buildingId, name },
+      params: { global_id: buildingId, name, zone },
     })
     return (resp.data.rooms ?? []) as TypologyRoom[]
   } catch (error) {
@@ -323,10 +336,10 @@ export async function getRoomsByTypology(buildingId: string, name: string): Prom
 }
 
 /** Niveau "Pièce spécifique" du sélecteur Espace -- pièces d'UN étage. */
-export async function getRoomsByFloor(floorId: string): Promise<TypologyRoom[]> {
+export async function getRoomsByFloor(zone: string, floorId: string): Promise<TypologyRoom[]> {
   try {
     const resp = await apiClient.get('/api/bim/graph/rooms-by-floor', {
-      params: { global_id: floorId },
+      params: { global_id: floorId, zone },
     })
     return (resp.data.rooms ?? []) as TypologyRoom[]
   } catch (error) {
@@ -356,5 +369,20 @@ export async function getFloors(zone: string): Promise<Floor[]> {
       .filter((f) => !!f.global_id)
   } catch (error) {
     throw new Error(extractErrorMessage(error, 'Failed to fetch floors'))
+  }
+}
+
+/**
+ * Liste les zones connues (isolation par zone, Phase 1 -- voir
+ * /graph/zones côté bim_api) -- remplace le champ texte libre de zone par
+ * un vrai menu déroulant, pour éviter les zones fantômes créées par une
+ * faute de frappe.
+ */
+export async function getZones(): Promise<string[]> {
+  try {
+    const resp = await apiClient.get('/api/bim/graph/zones')
+    return (resp.data.zones ?? []) as string[]
+  } catch (error) {
+    throw new Error(extractErrorMessage(error, 'Failed to fetch zones'))
   }
 }

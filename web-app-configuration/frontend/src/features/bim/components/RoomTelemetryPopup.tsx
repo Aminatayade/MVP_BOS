@@ -31,6 +31,7 @@ import MetricHistoryPanel from './MetricHistoryPanel'
 const MAX_HISTORY_POINTS = 50
 
 type Props = {
+  zone: string
   roomId: string
   label: string
   x: number
@@ -91,7 +92,7 @@ function SensorLiveBridge({ equipmentId, onPoint }: { equipmentId: string; onPoi
   return null
 }
 
-export default function RoomTelemetryPopup({ roomId, label, x, y, onClose }: Props) {
+export default function RoomTelemetryPopup({ zone, roomId, label, x, y, onClose }: Props) {
   const [groups, setGroups] = useState<GroupedMetrics | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -100,7 +101,7 @@ export default function RoomTelemetryPopup({ roomId, label, x, y, onClose }: Pro
     setGroups(null)
     setError(null)
 
-    getRoomEquipment(roomId)
+    getRoomEquipment(zone, roomId)
       .then(async (rows) => {
         const equipment = rows
           .map((raw) => parseArcadeNode((raw as Record<string, unknown>).node ?? raw))
@@ -111,7 +112,7 @@ export default function RoomTelemetryPopup({ roomId, label, x, y, onClose }: Pro
           return
         }
 
-        const results = await Promise.allSettled(equipment.map((e) => getEquipmentSummary(e.id)))
+        const results = await Promise.allSettled(equipment.map((e) => getEquipmentSummary(e.id, zone)))
         if (cancelled) return
 
         const grouped: GroupedMetrics = new Map()
@@ -133,7 +134,7 @@ export default function RoomTelemetryPopup({ roomId, label, x, y, onClose }: Pro
     return () => {
       cancelled = true
     }
-  }, [roomId])
+  }, [roomId, zone])
 
   const handleLivePoint = useCallback(
     (equipmentId: string) => (point: LivePoint) => {

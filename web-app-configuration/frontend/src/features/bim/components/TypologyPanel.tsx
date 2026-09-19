@@ -20,6 +20,7 @@ import { getLocationReadings, getNodeChildren, truncateLabel } from '../services
 import { parseArcadeNode } from '../utils/graphUtils'
 
 type Props = {
+  zone: string
   typologies: { id: string; label: string }[]
   onColorRooms?: (roomIds: string[], color: string) => void
 }
@@ -34,7 +35,7 @@ type DetailState = TypologyDetail | 'loading' | 'error'
 // couleurs.
 const DEFAULT_PALETTE = ['#3b82f6', '#22c55e', '#f59e0b', '#ec4899', '#a855f7', '#14b8a6', '#ef4444', '#eab308']
 
-export default function TypologyPanel({ typologies, onColorRooms }: Props) {
+export default function TypologyPanel({ zone, typologies, onColorRooms }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [details, setDetails] = useState<Record<string, DetailState>>({})
   const [coloredId, setColoredId] = useState<string | null>(null)
@@ -47,7 +48,7 @@ export default function TypologyPanel({ typologies, onColorRooms }: Props) {
     if (details[typologyId]) return
     setDetails((prev) => ({ ...prev, [typologyId]: 'loading' }))
     try {
-      const rows = await getNodeChildren(typologyId)
+      const rows = await getNodeChildren(zone, typologyId)
       const rooms: RoomRef[] = []
       for (const row of rows) {
         const neighbors = (row as Record<string, unknown>).neighbors
@@ -63,7 +64,7 @@ export default function TypologyPanel({ typologies, onColorRooms }: Props) {
       let temperature: number | null = null
       if (rooms.length > 0) {
         try {
-          const readings = await getLocationReadings(rooms.map((r) => r.id).join(','), 'temperature')
+          const readings = await getLocationReadings(zone, rooms.map((r) => r.id).join(','), 'temperature')
           const latest = readings[readings.length - 1]
           if (latest) temperature = latest.value
         } catch {
@@ -100,7 +101,7 @@ export default function TypologyPanel({ typologies, onColorRooms }: Props) {
     }
   }
 
-  const changeColor = (typologyId: string, index: number, color: string) => {
+  const changeColor = (typologyId: string, _index: number, color: string) => {
     setColors((prev) => ({ ...prev, [typologyId]: color }))
     // La coloration 3D déjà active pour CETTE typologie doit refléter le
     // nouveau choix immédiatement, pas seulement au prochain clic sur

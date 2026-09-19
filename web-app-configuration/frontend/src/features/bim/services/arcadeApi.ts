@@ -30,9 +30,9 @@ function extractErrorMessage(error: unknown, fallback: string): string {
   return anyError.response?.data?.error || anyError.response?.data?.detail || anyError.message || fallback
 }
 
-export async function getNodeChildren(nodeId: string) {
+export async function getNodeChildren(zone: string, nodeId: string) {
   try {
-    const resp = await apiClient.get('/api/bim/graph/neighbors', { params: { global_id: nodeId } })
+    const resp = await apiClient.get('/api/bim/graph/neighbors', { params: { global_id: nodeId, zone } })
     return unwrapArcadeResult(resp.data)
   } catch (error) {
     throw new Error(extractErrorMessage(error, 'ArcadeDB query failed'))
@@ -48,13 +48,14 @@ export async function getNodeChildren(nodeId: string) {
  * valeur la plus récente.
  */
 export async function getLocationReadings(
+  zone: string,
   locationId: string,
   metric: string,
   bucketSeconds = 3600,
 ): Promise<{ value: number; ts: string }[]> {
   try {
     const resp = await apiClient.get('/api/bim/graph/location-readings', {
-      params: { global_id: locationId, metric, bucket_seconds: bucketSeconds },
+      params: { global_id: locationId, metric, bucket_seconds: bucketSeconds, zone },
     })
     return (resp.data.readings ?? []) as { value: number; ts: string }[]
   } catch (error) {
@@ -62,18 +63,18 @@ export async function getLocationReadings(
   }
 }
 
-export async function getRoomEquipment(nodeId: string) {
+export async function getRoomEquipment(zone: string, nodeId: string) {
   try {
-    const resp = await apiClient.get('/api/bim/graph/room-equipment', { params: { global_id: nodeId } })
+    const resp = await apiClient.get('/api/bim/graph/room-equipment', { params: { global_id: nodeId, zone } })
     return unwrapArcadeResult(resp.data)
   } catch (error) {
     throw new Error(extractErrorMessage(error, 'Failed to fetch room equipment'))
   }
 }
 
-export async function getRootContexts() {
+export async function getRootContexts(zone: string) {
   try {
-    const resp = await apiClient.get('/api/bim/graph/floors')
+    const resp = await apiClient.get('/api/bim/graph/floors', { params: { zone } })
     return unwrapArcadeResult(resp.data)
   } catch (error) {
     throw new Error(extractErrorMessage(error, 'Failed to fetch floors'))
@@ -87,8 +88,8 @@ export interface FloorOption {
   buildingId?: string
 }
 
-export async function getFloors(): Promise<FloorOption[]> {
-  const rows = await getRootContexts()
+export async function getFloors(zone: string): Promise<FloorOption[]> {
+  const rows = await getRootContexts(zone)
   const floors: FloorOption[] = []
 
   for (const row of rows) {
@@ -261,9 +262,9 @@ export async function deleteZone(zone: string): Promise<{ deleted_nodes: Record<
   }
 }
 
-export async function getEquipment() {
+export async function getEquipment(zone: string) {
   try {
-    const resp = await apiClient.get('/api/bim/graph/equipment')
+    const resp = await apiClient.get('/api/bim/graph/equipment', { params: { zone } })
     return unwrapArcadeResult(resp.data)
   } catch (error) {
     throw new Error(extractErrorMessage(error, 'Failed to fetch equipment'))
@@ -365,11 +366,12 @@ export function truncateLabel(label: string, maxLength = 32): string {
  */
 export async function getEquipmentSummary(
   globalId: string,
+  zone: string,
   historyLimit = 50,
 ): Promise<EquipmentMetricSummary[]> {
   try {
     const resp = await apiClient.get('/api/bim/timeseries/equipment-summary', {
-      params: { global_id: globalId, history_limit: historyLimit },
+      params: { global_id: globalId, zone, history_limit: historyLimit },
     })
     return (resp.data.metrics ?? []) as EquipmentMetricSummary[]
   } catch (error) {
@@ -397,5 +399,19 @@ export async function ingestBatch(zone: string, files: { name: string; disciplin
     return resp.data
   } catch (error) {
     throw new Error(extractErrorMessage(error, 'Analysis failed'))
+  }
+}
+
+/**
+ * Liste les zones connues (isolation par zone, Phase 1 -- voir /graph/zones
+ * côté bim_api) -- remplace le champ texte libre de zone par un vrai menu
+ * déroulant, pour éviter les zones fantômes créées par une faute de frappe.
+ */
+export async function getZones(): Promise<string[]> {
+  try {
+    const resp = await apiClient.get('/api/bim/graph/zones')
+    return (resp.data.zones ?? []) as string[]
+  } catch (error) {
+    throw new Error(extractErrorMessage(error, 'Failed to fetch zones'))
   }
 }

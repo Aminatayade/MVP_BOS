@@ -4,13 +4,18 @@
  *              au clic sur ⚙️ dans WidgetBlock.tsx (pas une modale séparée).
  */
 import { useEffect, useState } from 'react'
-import { getEquipmentList, getEquipmentSummary, type EquipmentListItem, type EquipmentMetricSummary } from '../../bim/services/arcadeApi'
+import {
+  getEquipmentList, getEquipmentSummary,
+  type EquipmentCategoryScope, type EquipmentListItem, type EquipmentMetricSummary,
+} from '../../bim/services/arcadeApi'
 import { categoryLabel, type Calcul, type CockpitWidget, type DisplayUnit, type Interval } from '../types'
+import { availableMetricsForScope } from '../utils/metrics'
 
 type Props = {
   widget: CockpitWidget
-  availableCategories: string[]
+  scope: EquipmentCategoryScope[]
   spaceIds: string[]
+  zone: string
   onChange: (widget: CockpitWidget) => void
   onClose: () => void
 }
@@ -29,11 +34,41 @@ const INTERVAL_OPTIONS: { value: Interval; label: string }[] = [
   { value: 'mois', label: 'Mois' },
 ]
 
-export default function WidgetSettingsPanel({ widget, availableCategories, spaceIds, onChange, onClose }: Props) {
+export default function WidgetSettingsPanel({ widget, scope, spaceIds, zone, onChange, onClose }: Props) {
+  const availableCategories = scope.map((c) => c.category).filter((c) => c !== '_unknown')
+
   const toggleDataType = (cat: string) => {
     const has = widget.dataTypes.includes(cat)
     onChange({ ...widget, dataTypes: has ? widget.dataTypes.filter((c) => c !== cat) : [...widget.dataTypes, cat] })
   }
+
+  // Métriques RÉELLEMENT disponibles pour les données affichées du widget --
+  // dataTypes vide ("toutes") = union sur toutes les catégories du
+  // périmètre ; sinon restreint aux catégories cochées. Sans ça, le champ
+  // metric restait figé sur DEFAULT_METRIC ("power_instant_kw") pour tout
+  // widget scopé à un espace, quel que soit le bâtiment -- un bâtiment sans
+  // compteur électrique affichait alors silencieusement 0 partout, sans
+  // aucun moyen de choisir une métrique qui a réellement des données
+  // (ex: débit_instant_m3h, température).
+  const availableMetrics = availableMetricsForScope(scope, widget.dataTypes)
+
+  // Si widget.metric ne correspond à AUCUNE option de la liste (ex: encore
+  // DEFAULT_METRIC "power_instant_kw" alors que ce bâtiment n'a aucune
+  // donnée pour cette métrique), un <select> React affiche silencieusement
+  // la PREMIÈRE option comme "sélectionnée" sans jamais déclencher onChange
+  // -- l'utilisateur voit une métrique cohérente à l'écran, mais widget.metric
+  // reste inchangé et le widget continue de charger l'ancienne métrique sans
+  // données (piège constaté : "j'ai bien choisi débit mais c'est toujours
+  // vide", alors qu'aucune requête avec ce metric n'était jamais partie).
+  // On resynchronise explicitement dès que la liste réelle ne contient plus
+  // la valeur actuelle, plutôt que de compter sur ce comportement implicite.
+  useEffect(() => {
+    if (widget.targetEquipmentId) return
+    if (availableMetrics.length === 0) return
+    if (availableMetrics.some((m) => m.name === widget.metric)) return
+    onChange({ ...widget, metric: availableMetrics[0].name })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [widget.metric, widget.targetEquipmentId, availableMetrics.map((m) => m.name).join(',')])
 
   const isIndicateur = widget.type === 'indicateur'
   const [equipmentOptions, setEquipmentOptions] = useState<EquipmentListItem[]>([])
@@ -47,11 +82,11 @@ export default function WidgetSettingsPanel({ widget, availableCategories, space
       return
     }
     let cancelled = false
-    getEquipmentList(spaceIds)
+    getEquipmentList(zone, spaceIds)
       .then((list) => { if (!cancelled) setEquipmentOptions(list) })
       .catch(() => { if (!cancelled) setEquipmentOptions([]) })
     return () => { cancelled = true }
-  }, [isIndicateur, spaceIds.join(',')])
+  }, [isIndicateur, spaceIds.join(','), zone])
 
   // Métriques disponibles pour l'équipement actuellement ciblé -- peuple le
   // second sélecteur "Quelle mesure ?" (chaque type d'équipement du
@@ -147,6 +182,43 @@ export default function WidgetSettingsPanel({ widget, availableCategories, space
                 {categoryLabel(cat)}
               </label>
             ))}
+          </div>
+
+          <label style={{ display: 'block', fontSize: 11, color: 'var(--text)', marginBottom: 4 }}>Métrique</label>
+          <select
+            className="input" style={{ width: '100%', marginBottom: 4, fontSize: 12, padding: '6px 8px' }}
+            value={widget.metric}
+            onChange={(e) => onChange({ ...widget, metric: e.target.value })}
+          >
+            {availableMetrics.length === 0 && <option value={widget.metric}>{widget.metric}</option>}
+            {availableMetrics.map((m) => (
+              <option key={m.name} value={m.name}>{m.name}{m.unit ? ` (${m.unit})` : ''}</option>
+            ))}
+          </select>
+          <p className="panel-hint" style={{ fontSize: 10.5, marginBottom: 12 }}>
+            Seules les métriques ayant réellement des données pour les "Données affichées" ci-dessus sont proposées.
+          </p>
+        </>
+      )}
+
+      {widget.type === 'courbe' && (
+        <>
+          <label style={{ display: 'block', fontSize: 11, color: 'var(--text)', marginBottom: 4 }}>Style d'affichage</label>
+          <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+              <input
+                type="radio" name={`chart-style-${widget.id}`} checked={(widget.chartStyle ?? 'ligne') === 'ligne'}
+                onChange={() => onChange({ ...widget, chartStyle: 'ligne' })}
+              />
+              Ligne
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+              <input
+                type="radio" name={`chart-style-${widget.id}`} checked={widget.chartStyle === 'barres'}
+                onChange={() => onChange({ ...widget, chartStyle: 'barres' })}
+              />
+              Barres (une par période, façon "Répartition Énergies")
+            </label>
           </div>
         </>
       )}

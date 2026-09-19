@@ -2,19 +2,13 @@
  * FILE: src/App.jsx
  * DESCRIPTION: Composant principal de l'application Web BOS Exécution (Web App Client).
  *              Gère l'authentification OIDC via Keycloak et le contrôle d'accès (RBAC)
- *              ouvert aux rôles Administrateur, Configurateur et Client.
- *
- * INPUTS:
- *   - Jetons de session Keycloak (keycloak.token)
- *   - Route API Gateway : GET /api/execution-access (Vérification des rôles)
- *
- * OUTPUTS:
- *   - Interface utilisateur React affichant l'état de connexion et la réponse de test API.
+ *              ouvert aux rôles Administrateur, Configurateur et Client. Une fois
+ *              connecté, présente un écran d'accueil (AppLauncher) listant les apps
+ *              disponibles avant d'entrer dans l'une d'elles.
  *
  * DEPENDENCIES:
  *   - react (useEffect, useState, useRef)
  *   - ./services/keycloak (Instance Keycloak-js)
- *   - ./services/apiClient (Instance Axios configurée avec intercepteur JWT)
  *   - ./ProtectedRoute (Composant de contrôle des accès applicatifs)
  *
  * NOTES / PRÉREQUIS:
@@ -23,16 +17,19 @@
 
 import { useEffect, useState, useRef } from 'react';
 import keycloak from './services/keycloak';
-import apiClient from './services/apiClient';
 import { ProtectedRoute } from './ProtectedRoute';
-import BimViewer from './features/bim/BimViewer';
+import AppLauncher from './features/home/AppLauncher';
+import JumeauNumeriqueApp from './features/bim/JumeauNumeriqueApp';
+import CockpitEnergieApp from './features/cockpits/CockpitEnergieApp';
+import MaintenanceApp from './features/maintenance/MaintenanceApp';
+import OccupancyApp from './features/occupancy/OccupancyApp';
 import './App.css';
 
 const DISPLAYED_ROLES = ['Administrateur', 'Configurateur', 'Client'];
 
 function App() {
   const [authenticated, setAuthenticated] = useState(false);
-  const [apiResponse, setApiResponse] = useState('');
+  const [activeApp, setActiveApp] = useState(null);
   const isRun = useRef(false);
 
   useEffect(() => {
@@ -47,18 +44,6 @@ function App() {
       console.error('Erreur lors de la connexion Keycloak', err);
     });
   }, []);
-
-  /**
-   * Fonction de contrôle pour tester l'accès RBAC à la route sécurisée de l'API Gateway.
-   */
-  const testApiGateway = async () => {
-    try {
-      const response = await apiClient.get('/api/execution-access');
-      setApiResponse(JSON.stringify(response.data, null, 2));
-    } catch (error) {
-      setApiResponse(`Erreur (${error.response?.status || 'Inconnue'}) : ${JSON.stringify(error.response?.data || error.message)}`);
-    }
-  };
 
   const username = keycloak.tokenParsed?.preferred_username || '';
   const initial = username.charAt(0).toUpperCase();
@@ -110,27 +95,20 @@ function App() {
                     </div>
                   </div>
                 </div>
-                <div className="actions">
-                  <button className="btn btn-secondary" onClick={testApiGateway}>
-                    Tester l'accès API
-                  </button>
-                </div>
-              </div>
-
-              <div className="panel">
-                <h3>📡 Réponse de l'API Gateway</h3>
-                <p className="panel-hint">
-                  Vérifie que le rôle courant est bien accepté par la route
-                  <code> /api/execution-access</code> de l'API Gateway.
-                </p>
-                {apiResponse ? (
-                  <pre className="api-response">{apiResponse}</pre>
-                ) : (
-                  <p className="panel-hint">Aucun test lancé pour le moment.</p>
+                {activeApp && (
+                  <div className="actions">
+                    <button className="btn btn-secondary" onClick={() => setActiveApp(null)}>
+                      ← Applications
+                    </button>
+                  </div>
                 )}
               </div>
 
-              <BimViewer />
+              {!activeApp && <AppLauncher onSelect={setActiveApp} />}
+              {activeApp === 'jumeau' && <JumeauNumeriqueApp />}
+              {activeApp === 'cockpit' && <CockpitEnergieApp />}
+              {activeApp === 'maintenance' && <MaintenanceApp />}
+              {activeApp === 'occupancy' && <OccupancyApp />}
             </div>
           </ProtectedRoute>
         )}

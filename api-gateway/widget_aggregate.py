@@ -60,6 +60,8 @@ async def fetch_widget_payload(
     data_types: list[str],
     bucket_seconds: int,
     start_ms: int | None,
+    zone: str,
+    end_ms: int | None = None,
 ) -> dict:
     gid = ",".join(space_ids)
     async with httpx.AsyncClient(timeout=SHORT_TIMEOUT) as client:
@@ -67,18 +69,20 @@ async def fetch_widget_payload(
             types = data_types or [None]
             results = []
             for dt in types:
-                params = {"global_id": gid, "metric": metric, "aggregation": calcul}
+                params = {"global_id": gid, "metric": metric, "aggregation": calcul, "zone": zone}
                 if dt:
                     params["category"] = dt
                 if start_ms:
                     params["start"] = start_ms
+                if end_ms:
+                    params["end"] = end_ms
                 results.append(await _get(client, "/graph/location-readings-summary", params))
             value, unit = sum_indicator_results(results)
             return {"type": "indicateur", "value": value, "unit": unit}
 
         if widget_type in ("barres", "camembert"):
             if space_level == "batiment":
-                params = {"global_id": space_ids[0], "metric": metric}
+                params = {"global_id": space_ids[0], "metric": metric, "zone": zone}
                 if len(data_types) == 1:
                     params["category"] = data_types[0]
                 payload = await _get(client, "/graph/building-consumption", params)
@@ -88,11 +92,13 @@ async def fetch_widget_payload(
             types = data_types or ["_all"]
             entries = []
             for dt in types:
-                params = {"global_id": gid, "metric": metric, "aggregation": calcul}
+                params = {"global_id": gid, "metric": metric, "aggregation": calcul, "zone": zone}
                 if dt != "_all":
                     params["category"] = dt
                 if start_ms:
                     params["start"] = start_ms
+                if end_ms:
+                    params["end"] = end_ms
                 summary = await _get(client, "/graph/location-readings-summary", params)
                 entries.append({"code": dt, "value": summary.get("value") or 0, "unit": summary.get("unit") or ""})
             return {"type": widget_type, "building": False, "entries": entries}
@@ -101,15 +107,22 @@ async def fetch_widget_payload(
             types = data_types or ["_all"]
             datasets = []
             for dt in types:
-                params = {"global_id": gid, "metric": metric, "bucket_seconds": bucket_seconds, "aggregation": calcul}
+                params = {"global_id": gid, "metric": metric, "bucket_seconds": bucket_seconds, "aggregation": calcul, "zone": zone}
                 if dt != "_all":
                     params["category"] = dt
+                if start_ms:
+                    params["start"] = start_ms
+                if end_ms:
+                    params["end"] = end_ms
                 payload = await _get(client, "/graph/location-readings", params)
                 datasets.append({"code": dt, "points": payload.get("readings", [])})
             return {"type": "courbe", "datasets": datasets}
 
         if widget_type == "semaine_type":
-            params = {"global_id": gid, "metric": metric, "bucket_seconds": 3600, "aggregation": calcul, "raw_limit": 20000}
+            params = {
+                "global_id": gid, "metric": metric, "bucket_seconds": 3600,
+                "aggregation": calcul, "raw_limit": 20000, "zone": zone,
+            }
             if len(data_types) == 1:
                 params["category"] = data_types[0]
             payload = await _get(client, "/graph/location-readings", params)
@@ -118,18 +131,20 @@ async def fetch_widget_payload(
         raise ValueError(f"widget_type inconnu : {widget_type}")
 
 
-async def resolve_equipment_ids(space_ids: list[str]) -> set[str]:
+async def resolve_equipment_ids(space_ids: list[str], zone: str) -> set[str]:
     """Résout l'ensemble d'équipements couvert par `space_ids` via
     /graph/equipment-list (même endpoint que le sélecteur "cibler un
     équipement précis"), en relevant sa limite par défaut (500) pour cet
     usage interne -- voir le commentaire ajouté sur cette route dans
     api_server.py. Utilisé UNE FOIS à la connexion websocket pour enregistrer
     l'ensemble d'équipements à surveiller auprès de aggregation_bridge, pas
-    rappelé à chaque tick."""
+    rappelé à chaque tick. `zone` requis depuis l'isolation par zone du
+    graphe (Phase 1) -- sans elle, bim_api ne sait plus quelle base
+    interroger."""
     async with httpx.AsyncClient(timeout=SHORT_TIMEOUT) as client:
         response = await client.get(
             f"{BIM_API_INTERNAL_URL}/graph/equipment-list",
-            params={"global_id": ",".join(space_ids), "limit": 20000},
+            params={"global_id": ",".join(space_ids), "limit": 20000, "zone": zone},
         )
         response.raise_for_status()
         payload = response.json()

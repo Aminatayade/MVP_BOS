@@ -3,13 +3,14 @@ import { getRoomEquipment } from '../services/arcadeApi'
 import { parseArcadeNode } from '../utils/graphUtils'
 
 type Props = {
+  zone: string
   node: any | null
   onClose?: () => void
   onExpand?: (id: string) => void
   onCollapse?: (id: string) => void
 }
 
-export default function NodeInspector({ node, onClose, onExpand, onCollapse }: Props) {
+export default function NodeInspector({ zone, node, onClose, onExpand, onCollapse }: Props) {
   // Les hooks doivent toujours s'exécuter dans le même ordre à chaque rendu :
   // le early-return "pas de nœud sélectionné" est donc placé APRÈS les hooks
   // (contrairement à la version d'origine, qui retournait avant `useState`).
@@ -24,7 +25,7 @@ export default function NodeInspector({ node, onClose, onExpand, onCollapse }: P
     let cancelled = false
     async function loadEquipment() {
       try {
-        const rows = await getRoomEquipment(node.id)
+        const rows = await getRoomEquipment(zone, node.id)
         const eq: any[] = []
         for (const row of rows) {
           const parsed = parseArcadeNode((row as Record<string, unknown>).node ?? row)
@@ -44,7 +45,7 @@ export default function NodeInspector({ node, onClose, onExpand, onCollapse }: P
     setEquipment([])
     loadEquipment()
     return () => { cancelled = true }
-  }, [node])
+  }, [node, zone])
 
   if (!node) {
     return (

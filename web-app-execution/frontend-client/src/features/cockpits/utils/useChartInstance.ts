@@ -54,7 +54,17 @@ export function useChartInstance(
     const config = buildConfig()
     if (!canvas || !config) return
 
-    if (chartRef.current && chartRef.current.config.type !== config.type) {
+    // Détruit et recrée aussi quand le canvas lui-même a changé d'identité
+    // (pas seulement le type de graphique) -- le widget démonte/remonte son
+    // <canvas> entre l'état "Chargement..." et l'affichage du graphique
+    // (voir WidgetBlock.tsx), ce qui produit un TOUT NOUVEL élément DOM à
+    // chaque rafraîchissement. Sans cette vérification, l'instance Chart.js
+    // existante reste liée à l'ANCIEN canvas (retiré du DOM) et continue
+    // d'être mise à jour en silence, tandis que le nouveau canvas affiché à
+    // l'écran ne reçoit jamais de graphique -- bug constaté : un widget qui
+    // s'affiche bien une première fois redevient vide dès que la métrique ou
+    // l'intervalle change (donc à chaque nouveau cycle chargement/affichage).
+    if (chartRef.current && (chartRef.current.config.type !== config.type || chartRef.current.canvas !== canvas)) {
       chartRef.current.destroy()
       chartRef.current = null
     }

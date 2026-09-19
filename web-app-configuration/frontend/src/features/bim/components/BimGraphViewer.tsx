@@ -61,9 +61,9 @@ const EQUIPMENT_CATEGORY_LABELS: Record<string, string> = {
  * échec réseau) reste dans son état courant plutôt que de planter le rendu
  * du graphe.
  */
-async function refreshRoomTemperature(cy: Core, roomId: string): Promise<void> {
+async function refreshRoomTemperature(cy: Core, roomId: string, zone: string): Promise<void> {
   try {
-    const readings = await getLocationReadings(roomId, 'temperature')
+    const readings = await getLocationReadings(zone, roomId, 'temperature')
     const latest = readings[readings.length - 1]
     const node = cy.getElementById(roomId)
     if (node.empty()) return
@@ -76,6 +76,11 @@ async function refreshRoomTemperature(cy: Core, roomId: string): Promise<void> {
 }
 
 type Props = {
+  // Requise depuis l'isolation par zone du graphe (Phase 1) : toutes les
+  // routes de lecture appelées ici (/graph/neighbors, /graph/room-equipment,
+  // /graph/location-readings) ont besoin de `zone` pour savoir quelle base
+  // ArcadeDB interroger.
+  zone: string
   elements?: CytoscapeElement[]
   onNodeSelect?: (data: Record<string, unknown>) => void
   onPlaceholderClick?: (data: Record<string, unknown>) => void
@@ -144,6 +149,7 @@ function runLayout(cy: Core) {
 }
 
 export default function BimGraphViewer({
+  zone,
   elements = [],
   onNodeSelect,
   onPlaceholderClick,
@@ -176,6 +182,13 @@ export default function BimGraphViewer({
   onNodeSelectRef.current = onNodeSelect
   const onPlaceholderClickRef = useRef(onPlaceholderClick)
   onPlaceholderClickRef.current = onPlaceholderClick
+  // Même raisonnement que les refs de callback ci-dessus : `zone` n'est pas
+  // dans les dépendances de l'effet principal (qui ne se relance pas à
+  // chaque rendu), donc les closures capturées par cy.on(...) verraient
+  // sinon la valeur de `zone` du tout premier rendu, jamais mise à jour si
+  // le parent change de zone sans démonter ce composant.
+  const zoneRef = useRef(zone)
+  zoneRef.current = zone
   const onTypologiesChangeRef = useRef(onTypologiesChange)
   onTypologiesChangeRef.current = onTypologiesChange
 
@@ -354,7 +367,7 @@ export default function BimGraphViewer({
             const parentId = data.parentId
             if (!expandedRef.current.has(node.id())) {
               try {
-                const rows = await getRoomEquipment(parentId)
+                const rows = await getRoomEquipment(zoneRef.current, parentId)
                 const byCategory = new Map<string, CytoscapeElement['data'][]>()
                 for (const raw of rows) {
                   const parsed = parseArcadeNode((raw as Record<string, unknown>).node ?? raw)
@@ -435,7 +448,7 @@ export default function BimGraphViewer({
         }
 
         try {
-          const rows = await getNodeChildren(nodeId)
+          const rows = await getNodeChildren(zoneRef.current, nodeId)
           const byType = new Map<string, CytoscapeElement['data'][]>()
 
           for (const row of rows) {
@@ -535,7 +548,7 @@ export default function BimGraphViewer({
       // directement à l'étage (LOCATED_IN un Floor), pas à une pièce
       // précise -- se limiter à Room laisserait la fonctionnalité inerte.
       cy.on('add', 'node[type="Room"], node[type="Space"], node[type="Floor"]', (event) => {
-        refreshRoomTemperature(cy, event.target.id())
+        refreshRoomTemperature(cy, event.target.id(), zoneRef.current)
       })
 
       // Panneau "Contexte de pièces" (TypologyPanel.tsx, Mode Duo) : les
@@ -579,7 +592,7 @@ export default function BimGraphViewer({
       const cy = cyRef.current
       if (!cy) return
       cy.nodes('[type="Room"], [type="Space"], [type="Floor"]').forEach((node) => {
-        refreshRoomTemperature(cy, node.id())
+        refreshRoomTemperature(cy, node.id(), zoneRef.current)
       })
     }, ROOM_TEMPERATURE_REFRESH_MS)
 
@@ -697,6 +710,7 @@ export default function BimGraphViewer({
         <EquipmentTelemetryPopup
           key={equipmentPopup.nodeId}
           globalId={equipmentPopup.nodeId}
+          zone={zone}
           label={equipmentPopup.label}
           x={equipmentPopup.x}
           y={equipmentPopup.y}
@@ -706,6 +720,7 @@ export default function BimGraphViewer({
       {roomPopup && (
         <RoomTelemetryPopup
           key={roomPopup.nodeId}
+          zone={zone}
           roomId={roomPopup.nodeId}
           label={roomPopup.label}
           x={roomPopup.x}
@@ -717,7 +732,11 @@ export default function BimGraphViewer({
   )
 }
 
-export function useBimGraphActions(cyRef: React.RefObject<Core | null>, expandedRef: React.RefObject<Set<string>>) {
+export function useBimGraphActions(
+  cyRef: React.RefObject<Core | null>,
+  expandedRef: React.RefObject<Set<string>>,
+  zone: string,
+) {
   const addElements = (elements: CytoscapeElement[]) => {
     const cy = cyRef.current
     if (!cy) return
@@ -735,7 +754,7 @@ export function useBimGraphActions(cyRef: React.RefObject<Core | null>, expanded
     const cy = cyRef.current
     if (!cy || expandedRef.current?.has(nodeId)) return
 
-    const rows = await getNodeChildren(nodeId)
+    const rows = await getNodeChildren(zone, nodeId)
     for (const row of rows) {
       const neighbors =
         (row as Record<string, unknown>).neighbors ??

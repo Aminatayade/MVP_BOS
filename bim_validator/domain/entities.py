@@ -124,6 +124,12 @@ class EquipmentSimulationSpec:
     metrics: list[MetricSpec]
     history_days: int = 7
     points_per_day: int = 24
+    # Pas seedé à partir de points_per_day quand présent (voir
+    # json_equipment_catalog_adapter.get_generator_spec) -- c'est le
+    # paramètre réglé au niveau de la définition de l'indicateur pour les
+    # capteurs de détection (ex: présence), pas laissé à l'appréciation de
+    # l'affichage/de l'appel HTTP.
+    detection_interval_seconds: int | None = None
 
 
 @dataclass(frozen=True)

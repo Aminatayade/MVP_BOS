@@ -4,6 +4,7 @@ import MetricHistoryPanel from './MetricHistoryPanel'
 
 type Props = {
   globalId: string
+  zone: string
   label: string
   x: number
   y: number
@@ -14,8 +15,8 @@ type Props = {
 // (coordonnées écran fournies par BimGraphViewer via node.renderedPosition()).
 // Valeur courante + historique tenus à jour en temps réel via WebSocket, voir
 // useEquipmentTelemetry.
-export default function EquipmentTelemetryPopup({ globalId, label, x, y, onClose }: Props) {
-  const { metrics, error } = useEquipmentTelemetry(globalId)
+export default function EquipmentTelemetryPopup({ globalId, zone, label, x, y, onClose }: Props) {
+  const { metrics, error } = useEquipmentTelemetry(globalId, zone)
 
   return (
     <div

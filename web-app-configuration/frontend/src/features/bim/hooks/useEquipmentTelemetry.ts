@@ -65,7 +65,7 @@ export function useEquipmentLivePoint(equipmentId: string | null | undefined, on
   }, [equipmentId])
 }
 
-export function useEquipmentTelemetry(globalId: string | null | undefined) {
+export function useEquipmentTelemetry(globalId: string | null | undefined, zone: string) {
   const [metrics, setMetrics] = useState<EquipmentMetricSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -77,7 +77,7 @@ export function useEquipmentTelemetry(globalId: string | null | undefined) {
     let cancelled = false
     let unsubscribe: (() => void) | null = null
 
-    getEquipmentSummary(globalId)
+    getEquipmentSummary(globalId, zone)
       .then((result) => {
         if (cancelled) return
         setMetrics(result)
@@ -111,7 +111,7 @@ export function useEquipmentTelemetry(globalId: string | null | undefined) {
       cancelled = true
       unsubscribe?.()
     }
-  }, [globalId])
+  }, [globalId, zone])
 
   return { metrics, error }
 }

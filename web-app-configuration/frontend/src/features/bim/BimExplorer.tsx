@@ -8,13 +8,13 @@
  *              déjà en place côté ProtectedRoute.
  */
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import BimGraphViewer from './components/BimGraphViewer'
 import BimModelViewer from './components/BimModelViewer'
 import TypologyPanel from './components/TypologyPanel'
 import NodeInspector from './components/NodeInspector'
 import DisciplinePicker from './components/DisciplinePicker'
-import { deleteZone, getBuildings, getModelSources, ingestBatch, type ModelSource } from './services/arcadeApi'
+import { deleteZone, getBuildings, getModelSources, getZones, ingestBatch, type ModelSource } from './services/arcadeApi'
 import { arcadeRowsToNodeList, nodeElement, type CytoscapeElement } from './utils/graphUtils'
 
 // Grafana tourne comme service à part (pas via l'API Gateway) : le navigateur
@@ -145,6 +145,23 @@ export default function BimExplorer() {
   const [open, setOpen] = useState(false)
   const [defaultDisciplines, setDefaultDisciplines] = useState<string[]>(['ARCHI'])
   const [zone, setZone] = useState('')
+  // Menu déroulant des zones existantes (isolation par zone, Phase 1) --
+  // remplace le champ texte libre pur : évite les zones fantômes créées par
+  // une faute de frappe sur une zone qu'on croit déjà connaître. `null` =
+  // "+ Créer une nouvelle zone" sélectionné, révèle le champ texte libre.
+  const [knownZones, setKnownZones] = useState<string[]>([])
+  const [creatingNewZone, setCreatingNewZone] = useState(true)
+
+  useEffect(() => {
+    getZones()
+      .then((zones) => {
+        setKnownZones(zones)
+        // Aucune zone connue -- rien à choisir dans un menu déroulant,
+        // le champ texte libre reste le seul chemin possible.
+        if (zones.length === 0) setCreatingNewZone(true)
+      })
+      .catch(() => setKnownZones([]))
+  }, [])
   const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([])
   const [status, setStatus] = useState('')
   const [batchResults, setBatchResults] = useState<BatchResponse | null>(null)
@@ -269,6 +286,11 @@ export default function BimExplorer() {
           ? 'Ingestion terminée.'
           : `${selectedFiles.length} fichier(s) analysés.`,
       )
+      // Zone potentiellement nouvelle -- rafraîchit le menu déroulant pour
+      // qu'elle y apparaisse sans recharger toute la page.
+      const trimmedZone = zone.trim()
+      setKnownZones((prev) => (prev.includes(trimmedZone) ? prev : [...prev, trimmedZone].sort()))
+      setCreatingNewZone(false)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Erreur inattendue')
     } finally {
@@ -334,6 +356,10 @@ export default function BimExplorer() {
         `${result.deleted_nodes.Room ?? 0} pièce(s), ${result.deleted_nodes.Equipment ?? 0} équipement(s), ` +
         `${result.deleted_readings} mesure(s) time-series).`,
       )
+      // Rafraîchit le menu déroulant -- sinon la zone supprimée y reste
+      // visible jusqu'au prochain rechargement complet de la page.
+      setKnownZones((prev) => prev.filter((z) => z !== trimmed))
+      setCreatingNewZone(true)
     } catch (err) {
       setStatus(err instanceof Error ? err.message : 'Erreur lors de la suppression')
     } finally {
@@ -468,6 +494,7 @@ export default function BimExplorer() {
                 panneau de droite. */}
             <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
               <BimGraphViewer
+                zone={zone.trim()}
                 elements={visualElements}
                 onNodeSelect={(data) => setSelectedNodeInfo(data)}
                 autoExpandOnClick
@@ -475,7 +502,7 @@ export default function BimExplorer() {
               />
             </div>
             <div className="inspector-panel" style={{ width: 380, flexShrink: 0 }}>
-              <NodeInspector node={selectedNodeInfo} onClose={() => setSelectedNodeInfo(null)} />
+              <NodeInspector zone={zone.trim()} node={selectedNodeInfo} onClose={() => setSelectedNodeInfo(null)} />
             </div>
           </div>
         ) : explorerTab === 'model' ? (
@@ -489,6 +516,7 @@ export default function BimExplorer() {
                 réellement l'espace au lieu de grossir sur leur contenu. */}
             <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
               <BimGraphViewer
+                zone={zone.trim()}
                 elements={visualElements}
                 onNodeSelect={(data) => {
                   setSelectedNodeInfo(data)
@@ -516,6 +544,7 @@ export default function BimExplorer() {
                 comme le panneau "Contexte de pièces" de SpinalCore. */}
             <div style={{ width: 220, flexShrink: 0, minHeight: 0 }}>
               <TypologyPanel
+                zone={zone.trim()}
                 typologies={typologies}
                 onColorRooms={(roomIds, color) => setColorGroup(roomIds.length > 0 ? { ids: roomIds, color } : null)}
               />
@@ -566,13 +595,36 @@ export default function BimExplorer() {
 
         <div className="field">
           <label>Zone / Bâtiment</label>
-          <input
-            type="text"
-            className="input"
-            placeholder='ex: "Batiment A", "Parking B"'
-            value={zone}
-            onChange={(event) => setZone(event.target.value)}
-          />
+          {knownZones.length > 0 && (
+            <select
+              className="input"
+              style={{ marginBottom: creatingNewZone ? 6 : 0 }}
+              value={creatingNewZone ? '__new__' : zone}
+              onChange={(event) => {
+                if (event.target.value === '__new__') {
+                  setCreatingNewZone(true)
+                  setZone('')
+                } else {
+                  setCreatingNewZone(false)
+                  setZone(event.target.value)
+                }
+              }}
+            >
+              <option value="__new__">+ Créer une nouvelle zone</option>
+              {knownZones.map((z) => (
+                <option key={z} value={z}>{z}</option>
+              ))}
+            </select>
+          )}
+          {creatingNewZone && (
+            <input
+              type="text"
+              className="input"
+              placeholder='ex: "Batiment A", "Parking B"'
+              value={zone}
+              onChange={(event) => setZone(event.target.value)}
+            />
+          )}
           <small>Sert à rattacher les équipements au bon Room/Floor.</small>
           {zone.trim() && (
             <button

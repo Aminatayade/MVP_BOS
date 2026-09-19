@@ -91,15 +91,22 @@
       "label": "Détecteur de présence / occupation",
       "predefined_types": { "IfcSensor": ["MOVEMENTSENSOR", "OCCUPANCYSENSOR"] },
       "keywords": ["presence", "occupation", "pir", "mouvement", "occupancy"],
+      "detection_interval_seconds": 300,
       "metrics": [
         {
           "name": "occupancy",
           "unit": "count",
           "generator": "occupancy_correlated",
           "params": { "base": 0.0, "peak": 6.0, "occupied_hours": [9, 18] }
+        },
+        {
+          "name": "reservation",
+          "unit": "count",
+          "generator": "reservation_correlated",
+          "params": { "capacity": 8.0, "occupied_hours": [9, 18], "extra_booking_rate": 0.08 }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 21 }
     },
     "detecteur_fumee": {
       "label": "Détecteur fumée / incendie",

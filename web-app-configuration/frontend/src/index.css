@@ -668,7 +668,7 @@ select.input {
 
 /* Popup flottante sur un nœud Equipment (canvas Cytoscape, fond sombre --
    couleurs alignées sur le chrome déjà en inline dans BimGraphViewer.tsx,
-   pas les variables --gray-*/--navy-* du thème clair du reste de l'app). */
+   pas les variables --gray- ou --navy- du thème clair du reste de l'app). */
 .equipment-popup {
   z-index: 20;
   width: 220px;
