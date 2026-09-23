@@ -8,7 +8,7 @@
  *              usages).
  */
 
-export type AppId = 'jumeau' | 'cockpit' | 'maintenance' | 'occupancy'
+export type AppId = 'jumeau' | 'cockpit' | 'maintenance' | 'occupancy' | 'energy-consumption'
 
 type AppCard = {
   id: AppId
@@ -32,6 +32,13 @@ const APPS: AppCard[] = [
     icon: '⚡',
     title: 'Cockpit Énergie',
     description: 'Pilotez et analysez la consommation énergétique par bâtiment, étage ou pièce.',
+    tags: ['ÉNERGIE', 'COCKPIT'],
+  },
+  {
+    id: 'energy-consumption',
+    icon: '📊',
+    title: 'Consommation énergétique',
+    description: 'Suivi mensuel de la consommation par sous-catégorie (éclairage, CVC, IT, cuisine, ascenseurs).',
     tags: ['ÉNERGIE', 'COCKPIT'],
   },
   {

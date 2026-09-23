@@ -32,6 +32,16 @@ from application.occupancy_aggregation import (
     filter_by_plage,
     per_sensor_occupancy_pct,
 )
+# Alias : energy_aggregation.filter_by_plage a une sémantique de plage
+# différente (toute_journee/ouvrable/hors_ouvrable, pas de coupure le
+# week-end) de occupancy_aggregation.filter_by_plage -- même nom, deux
+# fonctions distinctes, jamais interchangeables.
+from application.energy_aggregation import (
+    bucket_daily_by_subcategory,
+    densify_daily_subcategories,
+    filter_by_plage as energy_filter_by_plage,
+    month_total_by_subcategory,
+)
 from domain.entities import ValidationReport
 from infrastructure.adapters.arcadedb_repository_adapter import ArcadeDbRepositoryAdapter
 from infrastructure.secrets import read_secret
@@ -41,7 +51,7 @@ from infrastructure.zone_database import (
     invalidate_zone_cache,
     resolve_database_for_zone,
 )
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Singleton process : le pool de threads du backfill de simulation doit être
 # PARTAGÉ entre tous les fichiers d'un même batch d'ingestion (chacun
@@ -177,6 +187,27 @@ class ApiHandler(BaseHTTPRequestHandler):
                     self._send_json({"error": "unknown zone", "zone": zone}, 404)
                     return
                 repo = repo_factory(database)
+                # EquipmentReading (magasin timeseries) reste TOUJOURS dans la
+                # base partagée historique, quelle que soit la zone (voir
+                # /graph/location-readings) -- une zone avec sa propre base
+                # graphe (toute zone créée depuis l'isolation par zone,
+                # Phase 1) n'a JAMAIS ce type défini chez elle : y lancer un
+                # DELETE FROM EquipmentReading échoue avec une
+                # SchemaException ArcadeDB ("Type ... was not found"), pas
+                # juste "0 lignes supprimées". Pour une zone legacy (ex.
+                # Batipompe), `timeseries_repo` pointe vers la même base que
+                # `repo` -- aucun cas particulier à gérer.
+                # timeout_seconds relevé (défaut 30s) : marge de sécurité en
+                # plus du passage au paramètre lié ci-dessous -- une DELETE
+                # sur une base de plusieurs millions de lignes n'a pas
+                # forcément le même profil de coût qu'une simple lecture.
+                timeseries_repo = ArcadeDbRepositoryAdapter(
+                    base_url=os.environ.get("ARCADEDB_BASE_URL", "http://localhost:2480"),
+                    database=LEGACY_DATABASE,
+                    username=os.environ.get("ARCADEDB_USERNAME", "root"),
+                    password=read_secret("ARCADEDB_PASSWORD", "testBIM123"),
+                    timeout_seconds=120,
+                )
                 try:
                     escaped_zone = _cypher_escape(zone)
 
@@ -188,14 +219,16 @@ class ApiHandler(BaseHTTPRequestHandler):
                     ).get("result", [])
                     equip_ids = [r["gid"] for r in equip_rows if r.get("gid")]
 
-                    deleted_readings = 0
-                    if equip_ids:
-                        id_list = ", ".join("'" + _cypher_escape(eid) + "'" for eid in equip_ids)
-                        resp = repo.query_sql(f"DELETE FROM EquipmentReading WHERE global_id IN [{id_list}]")
-                        rows = resp.get("result") or []
-                        deleted_readings = rows[0].get("count", 0) if rows else 0
-
-                    # 2) Chaque type de nœud spatial/métier, un par un.
+                    # 2) Chaque type de nœud spatial/métier, un par un --
+                    # AVANT la purge d'EquipmentReading (ordre inversé par
+                    # rapport à avant) : c'est cette étape qui fait vraiment
+                    # "disparaître" la zone (plus dans /graph/zones, plus
+                    # dans l'UI), et elle est rapide (quelques secondes) même
+                    # pour une maquette volumineuse. La purge des lectures,
+                    # elle, peut dépasser largement 2 minutes sur une base
+                    # partagée de plusieurs millions de lignes (ex: clinic
+                    # multi-disciplines, 500 équipements) -- elle ne doit
+                    # jamais empêcher la zone de disparaître pour autant.
                     deleted_nodes = {}
                     for vertex_type in ("Equipment", "Room", "Floor", "Building", "Site", "Typology"):
                         count_before = repo.query_cypher(
@@ -212,6 +245,32 @@ class ApiHandler(BaseHTTPRequestHandler):
                     # même nom resterait à tort résolue vers son ancienne
                     # base (le cache de résolution est sinon permanent).
                     invalidate_zone_cache(zone)
+
+                    # 3) Purge best-effort des lectures -- paramètre lié
+                    # (`:ids`), pas une liste de littéraux interpolés (même
+                    # constat déjà documenté ailleurs dans ce fichier pour
+                    # `global_id IN` : 13-52s avec des littéraux contre 5-6s
+                    # en paramètre lié). Un échec/timeout ici est loggé mais
+                    # NE FAIT PAS échouer la suppression de zone -- les
+                    # lectures orphelines restent inertes (plus aucun nœud
+                    # Equipment ne les référence) et sans effet fonctionnel
+                    # jusqu'à un nettoyage ultérieur.
+                    deleted_readings: int | None = 0
+                    if equip_ids:
+                        try:
+                            resp = timeseries_repo.query_sql(
+                                "DELETE FROM EquipmentReading WHERE global_id IN :ids",
+                                params={"ids": equip_ids},
+                            )
+                            rows = resp.get("result") or []
+                            deleted_readings = rows[0].get("count", 0) if rows else 0
+                        except Exception as exc:
+                            print(
+                                f"Warning: purge EquipmentReading après suppression de la zone '{zone}' "
+                                f"a échoué (zone déjà supprimée du graphe, sans effet fonctionnel) : {exc}",
+                                file=sys.stderr,
+                            )
+                            deleted_readings = None
 
                     self._send_json({
                         "ok": True,
@@ -910,11 +969,33 @@ RETURN f.global_id AS floor_id, f.name AS floor_name, collect(DISTINCT e.global_
                     # liste interpolée en littéraux dépassait régulièrement le
                     # timeout de la gateway (10s), constaté sur ce widget
                     # précis ("Nouvelles barres" à l'échelle Bâtiment).
+                    # Fenêtre bornée : sur la table partagée (plusieurs millions
+                    # de lignes), `metric + IN + ORDER BY ts DESC` sans borne
+                    # de temps dépassait le timeout gateway (504 sur
+                    # state/temperature). Le dernier ts de la métrique est
+                    # obtenu instantanément (ORDER BY ts DESC LIMIT 1) ; on
+                    # ne lit ensuite que le dernier jour AVANT ce point
+                    # (relatif à la donnée, pas à "maintenant" : le backfill
+                    # est un instantané qui peut dater de plusieurs jours).
+                    window_clause = ""
+                    sql_params = {"metric": metric, "ids": all_equip_ids}
+                    newest = timeseries_repo.query_sql(
+                        "SELECT ts FROM EquipmentReading WHERE metric = :metric ORDER BY ts DESC LIMIT 1",
+                        params={"metric": metric},
+                    ).get("result") or []
+                    if newest and newest[0].get("ts"):
+                        try:
+                            newest_dt = datetime.strptime(str(newest[0]["ts"])[:23], "%Y-%m-%d %H:%M:%S.%f")
+                        except ValueError:
+                            newest_dt = datetime.strptime(str(newest[0]["ts"])[:19], "%Y-%m-%d %H:%M:%S")
+                        window_start_ms = int(newest_dt.replace(tzinfo=timezone.utc).timestamp() * 1000) - 24 * 3600 * 1000
+                        window_clause = " AND ts >= :window_start"
+                        sql_params["window_start"] = window_start_ms
                     sql = (
                         "SELECT global_id, value, unit FROM EquipmentReading WHERE metric = :metric "
-                        f"AND global_id IN :ids ORDER BY ts DESC LIMIT {fetch_limit}"
+                        f"AND global_id IN :ids{window_clause} ORDER BY ts DESC LIMIT {fetch_limit}"
                     )
-                    recent_rows = timeseries_repo.query_sql(sql, params={"metric": metric, "ids": all_equip_ids}).get("result") or []
+                    recent_rows = timeseries_repo.query_sql(sql, params=sql_params).get("result") or []
                     for row in recent_rows:
                         gid = row.get("global_id")
                         if gid and gid not in latest_by_equipment:
@@ -1248,10 +1329,16 @@ RETURN r.global_id AS room_id, r.name AS room_name, f.global_id AS floor_id, f.n
                         f"MATCH (f:Floor {{global_id: '{_cypher_escape(etage)}', zone: '{escaped_zone}'}})"
                         "-[:HAS_CHILD]->(r) "
                     )
+                # `WHERE true{type_clause}` (pas `r.space_type IS NOT NULL`) :
+                # une pièce sans type d'espace déterminé (son nom ne
+                # correspond à aucun mot-clé bureau -- voir
+                # occupancy_provisioning_service._assign_space_type) doit
+                # rester incluse dans "Tout type d'espace", exclue
+                # uniquement si l'utilisateur filtre sur un type précis.
                 type_clause = f" AND r.space_type = '{_cypher_escape(type_espace)}'" if type_espace else ""
                 sensors_cy = f"""
 {floor_clause if floor_clause else ""}MATCH (r:Room {{zone: '{escaped_zone}'}})
-WHERE r.space_type IS NOT NULL{type_clause}
+WHERE true{type_clause}
 MATCH (e:Equipment)-[:LOCATED_IN]->(r)
 WHERE e.equipment_type = 'detecteur_presence' AND e.simulated = true
 RETURN DISTINCT e.global_id AS sensor_id, r.global_id AS room_id, r.name AS room_name, r.space_type AS space_type
@@ -1327,6 +1414,170 @@ RETURN DISTINCT e.global_id AS sensor_id, r.global_id AS room_id, r.name AS room
             except Exception as exc:
                 self._send_json({"error": str(exc)}, 500)
             return
+        if parsed.path == "/graph/energy-consumption-dashboard":
+            # Cockpit FIXE "Consommation énergétique" (BOS Exécution) : un
+            # seul payload pour le graphique en barres empilées par
+            # sous-catégorie (Éclairage/Stores/MCR-CVC/IT/Cuisine/Ascenseurs)
+            # + les 3 KPI. Contrairement à /graph/building-consumption (widget
+            # du constructeur générique, scopé à un Building via
+            # HAS_CHILD*0..), `zone` est une propriété DIRECTE du nœud
+            # Equipment (voir _upsert_node_query) -- pas besoin de traverser
+            # Building->Floor->Room pour le retrouver, ce cockpit n'a pas de
+            # notion d'étage/pièce dans son périmètre (spec client).
+            params = parse_qs(parsed.query)
+            zone = (params.get("zone", [None])[0] or "").strip()
+            start_param = params.get("start", [None])[0]
+            end_param = params.get("end", [None])[0]
+            compare_start_param = params.get("compare_start", [None])[0]
+            compare_end_param = params.get("compare_end", [None])[0]
+            plage = params.get("plage", ["toute_journee"])[0] or "toute_journee"
+            type_consommation = (params.get("type_consommation", [""])[0] or "").strip()
+            sous_categorie = (params.get("sous_categorie", [""])[0] or "").strip()
+            raw_limit = int(params.get("raw_limit", ["50000"])[0])
+            if not zone or not start_param or not end_param:
+                self._send_json({"error": "zone, start and end query params are required"}, 400)
+                return
+
+            catalog = self._build_equipment_catalog()
+            energy_type_filter = None if type_consommation in ("", "total") else type_consommation
+            equipment_types = catalog.list_energy_equipment_types(
+                subcategory=sous_categorie or None, energy_type=energy_type_filter,
+            )
+            if not equipment_types:
+                # Combinaison de filtres valide mais qui ne matche aucun
+                # equipment_type taggé (ex: sous_categorie=eclairage +
+                # type_consommation=thermique, un luminaire n'a pas de
+                # variante thermique) -- honnête plutôt qu'une 500.
+                self._send_json({"ok": True, "zone": zone, "has_equipment": False})
+                return
+
+            repo_factory = self._arcadedb_repo_factory()
+            database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+            if database is None:
+                self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                return
+            graph_repo = repo_factory(database)
+
+            try:
+                escaped_zone = _cypher_escape(zone)
+                types_literal = ", ".join(f"'{_cypher_escape(t)}'" for t in equipment_types)
+                equip_cy = f"""
+MATCH (e:Equipment {{zone: '{escaped_zone}'}})
+WHERE e.equipment_type IN [{types_literal}]
+RETURN e.global_id AS global_id, e.equipment_type AS equipment_type
+"""
+                equip_rows = graph_repo.query_cypher(equip_cy).get("result") or []
+                if not equip_rows:
+                    # Equipment_type valides pour ce filtre, mais AUCUNE
+                    # instance dans cette zone (ex: pas de chaudière fioul
+                    # dans ce bâtiment) -- état vide honnête, jamais de
+                    # repli fabriqué.
+                    self._send_json({"ok": True, "zone": zone, "has_equipment": False})
+                    return
+
+                subcategory_by_gid: dict[str, str] = {}
+                equipment_ids: list[str] = []
+                for row in equip_rows:
+                    gid = row.get("global_id")
+                    if not gid:
+                        continue
+                    spec = catalog.get_generator_spec(row.get("equipment_type"))
+                    if spec.energy_subcategory is None:
+                        continue
+                    subcategory_by_gid[gid] = spec.energy_subcategory
+                    equipment_ids.append(gid)
+
+                timeseries_repo = repo_factory(LEGACY_DATABASE)
+
+                def _fetch(start_ms: int, end_ms: int) -> list[dict]:
+                    sql = (
+                        "SELECT ts, value, global_id FROM EquipmentReading WHERE "
+                        "metric = :metric AND global_id IN :ids AND ts >= :start_ts AND ts <= :end_ts "
+                        f"ORDER BY ts DESC LIMIT {raw_limit}"
+                    )
+                    sql_params = {
+                        "metric": "power_instant_kw", "ids": equipment_ids,
+                        "start_ts": int(start_ms), "end_ts": int(end_ms),
+                    }
+                    return timeseries_repo.query_sql(sql, params=sql_params).get("result") or []
+
+                start_ms, end_ms = int(start_param), int(end_param)
+                current_rows = energy_filter_by_plage(_fetch(start_ms, end_ms), plage)
+                current_daily = bucket_daily_by_subcategory(current_rows, subcategory_by_gid, plage=plage)
+
+                compare_totals = None
+                compare_pct = None
+                if compare_start_param and compare_end_param:
+                    compare_rows = energy_filter_by_plage(
+                        _fetch(int(compare_start_param), int(compare_end_param)), plage,
+                    )
+                    compare_daily = bucket_daily_by_subcategory(compare_rows, subcategory_by_gid, plage=plage)
+                    compare_totals = month_total_by_subcategory(compare_daily)
+
+                current_totals = month_total_by_subcategory(current_daily)
+                current_total_kwh = round(sum(current_totals.values()), 2)
+                if compare_totals is not None:
+                    compare_total_kwh = round(sum(compare_totals.values()), 2)
+                    compare_pct = (
+                        round(100 * (current_total_kwh - compare_total_kwh) / compare_total_kwh, 1)
+                        if compare_total_kwh else None
+                    )
+                else:
+                    compare_total_kwh = None
+
+                # "Valeur temps réel" : TOUJOURS le dernier relevé connu,
+                # indépendant du mois navigué et de la plage horaire -- une
+                # jauge "maintenant", pas une valeur du mois affiché. Même
+                # technique de fenêtre bornée que /graph/building-consumption
+                # (dernier ts global, puis 24h avant CE point, jamais "now"
+                # littéral qui pourrait dépasser l'historique simulé).
+                newest = timeseries_repo.query_sql(
+                    "SELECT ts FROM EquipmentReading WHERE metric = :metric ORDER BY ts DESC LIMIT 1",
+                    params={"metric": "power_instant_kw"},
+                ).get("result") or []
+                realtime_kw = 0.0
+                if newest and newest[0].get("ts"):
+                    try:
+                        newest_dt = datetime.strptime(str(newest[0]["ts"])[:23], "%Y-%m-%d %H:%M:%S.%f")
+                    except ValueError:
+                        newest_dt = datetime.strptime(str(newest[0]["ts"])[:19], "%Y-%m-%d %H:%M:%S")
+                    window_start_ms = int(newest_dt.replace(tzinfo=timezone.utc).timestamp() * 1000) - 24 * 3600 * 1000
+                    recent_sql = (
+                        "SELECT global_id, value FROM EquipmentReading WHERE metric = :metric "
+                        f"AND global_id IN :ids AND ts >= :window_start ORDER BY ts DESC LIMIT {min(5000, max(200, len(equipment_ids) * 50))}"
+                    )
+                    recent_rows = timeseries_repo.query_sql(recent_sql, params={
+                        "metric": "power_instant_kw", "ids": equipment_ids,
+                        "window_start": window_start_ms,
+                    }).get("result") or []
+                    latest_by_equipment: dict[str, float] = {}
+                    for row in recent_rows:
+                        gid = row.get("global_id")
+                        if gid and gid not in latest_by_equipment:
+                            latest_by_equipment[gid] = row.get("value") or 0.0
+                    realtime_kw = round(sum(latest_by_equipment.values()), 2)
+
+                day_labels = sorted(current_daily.keys())
+                subcategories = sorted(set(subcategory_by_gid.values()))
+                dense = densify_daily_subcategories(current_daily, subcategories, day_labels)
+
+                self._send_json({
+                    "ok": True,
+                    "zone": zone,
+                    "has_equipment": True,
+                    "bars": {
+                        "days": day_labels,
+                        "subcategories": subcategories,
+                        "series": {subcat: [dense[d][subcat] for d in day_labels] for subcat in subcategories},
+                    },
+                    "kpi_realtime_kw": realtime_kw,
+                    "kpi_current_month_kwh": current_total_kwh,
+                    "kpi_previous_month_kwh": compare_total_kwh,
+                    "kpi_variation_pct": compare_pct,
+                })
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, 500)
+            return
         if parsed.path == "/graph/zones":
             # Liste les zones connues -- remplace le champ texte libre de
             # zone côté frontend (BimExplorer.tsx/BimViewer.tsx) par un vrai
@@ -1366,6 +1617,34 @@ RETURN DISTINCT e.global_id AS sensor_id, r.global_id AS room_id, r.name AS room
     def do_POST(self):
         try:
             parsed = urlparse(self.path)
+            if parsed.path == "/graph/grafana-sync":
+                # Recale le dashboard Grafana (variables Pièce/Étage + Type
+                # de donnée + paramètre `zone` des requêtes) sur UNE zone à
+                # la demande -- appelé par l'onglet Supervision du
+                # Configurateur quand on change de zone. Avant, cette synchro
+                # n'avait lieu qu'à l'INGESTION, donc Grafana restait figé sur
+                # la dernière zone ingérée quelle que soit la zone affichée.
+                params = parse_qs(parsed.query)
+                zone = (params.get("zone", [None])[0] or "").strip()
+                if not zone:
+                    self._send_json({"error": "zone query param is required"}, 400)
+                    return
+                repo_factory = self._arcadedb_repo_factory()
+                database = resolve_database_for_zone(repo_factory, zone, for_write=False)
+                if database is None:
+                    self._send_json({"error": "unknown zone", "zone": zone}, 404)
+                    return
+                try:
+                    dashboard_sync = self._build_dashboard_sync(database)
+                    if dashboard_sync is None:
+                        self._send_json({"ok": True, "zone": zone, "synced": False})
+                        return
+                    dashboard_sync.sync_variables(zone=zone)
+                    self._send_json({"ok": True, "zone": zone, "synced": True})
+                except Exception as exc:
+                    self._send_json({"error": str(exc)}, 500)
+                return
+
             if parsed.path == "/validate":
                 self._handle_validate_batch()
                 return

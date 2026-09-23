@@ -130,6 +130,12 @@ class EquipmentSimulationSpec:
     # capteurs de détection (ex: présence), pas laissé à l'appréciation de
     # l'affichage/de l'appel HTTP.
     detection_interval_seconds: int | None = None
+    # Cockpit "Consommation énergétique" (BOS Exécution) : None pour tout
+    # equipment_type non concerné (capteurs GTB, sécurité, sanitaire...) --
+    # jamais un repli implicite, pour qu'un type non taggé ne puisse jamais
+    # apparaître dans une somme par sous-catégorie de ce cockpit.
+    energy_subcategory: str | None = None
+    energy_type: str | None = None
 
 
 @dataclass(frozen=True)

@@ -23,6 +23,7 @@ import JumeauNumeriqueApp from './features/bim/JumeauNumeriqueApp';
 import CockpitEnergieApp from './features/cockpits/CockpitEnergieApp';
 import MaintenanceApp from './features/maintenance/MaintenanceApp';
 import OccupancyApp from './features/occupancy/OccupancyApp';
+import EnergyConsumptionApp from './features/energy-consumption/EnergyConsumptionApp';
 import './App.css';
 
 const DISPLAYED_ROLES = ['Administrateur', 'Configurateur', 'Client'];
@@ -109,6 +110,7 @@ function App() {
               {activeApp === 'cockpit' && <CockpitEnergieApp />}
               {activeApp === 'maintenance' && <MaintenanceApp />}
               {activeApp === 'occupancy' && <OccupancyApp />}
+              {activeApp === 'energy-consumption' && <EnergyConsumptionApp />}
             </div>
           </ProtectedRoute>
         )}

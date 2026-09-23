@@ -415,3 +415,17 @@ export async function getZones(): Promise<string[]> {
     throw new Error(extractErrorMessage(error, 'Failed to fetch zones'))
   }
 }
+
+/**
+ * Recale le dashboard Grafana (Pièce/Étage, Type de donnée, zone des
+ * requêtes) sur la zone affichée -- sans ça, le dashboard reste sur la
+ * dernière zone INGÉRÉE. Best-effort côté appelant : un échec ne doit pas
+ * empêcher d'afficher Grafana.
+ */
+export async function syncGrafanaZone(zone: string): Promise<void> {
+  try {
+    await apiClient.post('/api/bim/graph/grafana-sync', null, { params: { zone } })
+  } catch (error) {
+    throw new Error(extractErrorMessage(error, 'Failed to sync Grafana dashboard'))
+  }
+}

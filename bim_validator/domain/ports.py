@@ -261,6 +261,19 @@ class EquipmentCatalogPort(ABC):
         données réellement présentes à un instant donné."""
         raise NotImplementedError
 
+    @abstractmethod
+    def list_energy_equipment_types(
+        self, *, subcategory: str | None = None, energy_type: str | None = None
+    ) -> list[str]:
+        """Equipment_type du catalogue taggés pour le cockpit "Consommation
+        énergétique" (champ energy_subcategory renseigné dans la config
+        JSON), filtrés par sous-catégorie et/ou type d'énergie quand fournis
+        (un filtre à None n'est pas appliqué). Ne retourne JAMAIS un type non
+        taggé (ex: capteur GTB) -- ce cockpit n'affiche que des postes de
+        consommation déclarés comme tels, jamais un repli sur tout le
+        catalogue."""
+        raise NotImplementedError
+
 
 class GrafanaDashboardSyncPort(ABC):
     """Contrat pour resynchroniser les variables d'un dashboard Grafana

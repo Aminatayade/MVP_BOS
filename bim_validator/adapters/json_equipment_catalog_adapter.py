@@ -103,6 +103,8 @@ class JsonEquipmentCatalogAdapter(EquipmentCatalogPort):
             history_days=history.get("days", 7),
             points_per_day=points_per_day,
             detection_interval_seconds=detection_interval_seconds,
+            energy_subcategory=spec.get("energy_subcategory"),
+            energy_type=spec.get("energy_type"),
         )
 
     def all_metric_names(self) -> list[str]:
@@ -112,3 +114,18 @@ class JsonEquipmentCatalogAdapter(EquipmentCatalogPort):
                 if metric["name"] not in names:
                     names.append(metric["name"])
         return names
+
+    def list_energy_equipment_types(
+        self, *, subcategory: str | None = None, energy_type: str | None = None
+    ) -> list[str]:
+        result = []
+        for key, spec in self._equipment_types.items():
+            spec_subcategory = spec.get("energy_subcategory")
+            if spec_subcategory is None:
+                continue
+            if subcategory and spec_subcategory != subcategory:
+                continue
+            if energy_type and spec.get("energy_type") != energy_type:
+                continue
+            result.append(key)
+        return sorted(result)

@@ -14,6 +14,7 @@ import BimModelViewer from './components/BimModelViewer'
 import TypologyPanel from './components/TypologyPanel'
 import NodeInspector from './components/NodeInspector'
 import DisciplinePicker from './components/DisciplinePicker'
+import SupervisionFrame from './components/SupervisionFrame'
 import { deleteZone, getBuildings, getModelSources, getZones, ingestBatch, type ModelSource } from './services/arcadeApi'
 import { arcadeRowsToNodeList, nodeElement, type CytoscapeElement } from './utils/graphUtils'
 
@@ -557,12 +558,7 @@ export default function BimExplorer() {
                 derrière. Le sélecteur pièce/étage reste dans le dashboard
                 lui-même pour l'instant (pas encore synchronisé avec le noeud
                 sélectionné dans le graphe). */}
-            <iframe
-              key={GRAFANA_DASHBOARD_URL}
-              src={GRAFANA_DASHBOARD_URL}
-              title="Supervision"
-              style={{ width: '100%', height: '100%', border: 'none', borderRadius: 8, background: '#0b1120' }}
-            />
+            <SupervisionFrame zone={zone.trim()} dashboardUrl={GRAFANA_DASHBOARD_URL} />
           </div>
         )}
       </div>

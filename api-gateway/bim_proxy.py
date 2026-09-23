@@ -220,6 +220,14 @@ async def graph_zones(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/zones", request, SHORT_TIMEOUT)
 
 
+# Ouvert au rôle Client aussi (comme /graph/zones) : recale le dashboard
+# Grafana sur la zone affichée -- POST car il modifie le dashboard, même si la
+# zone est passée en query string (voir _forward_post_with_query).
+@router.post("/graph/grafana-sync", dependencies=[Depends(verify_execution_allowed_roles)])
+async def graph_grafana_sync(request: Request):
+    return await _forward_post_with_query(BIM_API_INTERNAL_URL, "/graph/grafana-sync", request, LONG_TIMEOUT)
+
+
 # LONG_TIMEOUT (pas SHORT) : le premier appel sur une zone avec de vraies
 # Room provisionne des capteurs de présence simulés + backfill leur
 # historique (voir occupancy_provisioning_service.py côté bim_api) --
@@ -227,6 +235,16 @@ async def graph_zones(request: Request):
 @router.get("/graph/occupancy-dashboard", dependencies=[Depends(verify_execution_allowed_roles)])
 async def graph_occupancy_dashboard(request: Request):
     return await _forward_get(BIM_API_INTERNAL_URL, "/graph/occupancy-dashboard", request, LONG_TIMEOUT)
+
+
+# LONG_TIMEOUT (pas SHORT) : contrairement à /graph/building-consumption
+# (une seule fenêtre bornée de 24h), cette route fait DEUX lectures brutes
+# mensuelles complètes (mois courant + mois n-1) sur la table partagée --
+# profil de coût plus proche d'occupancy-dashboard que de
+# building-consumption.
+@router.get("/graph/energy-consumption-dashboard", dependencies=[Depends(verify_execution_allowed_roles)])
+async def graph_energy_consumption_dashboard(request: Request):
+    return await _forward_get(BIM_API_INTERNAL_URL, "/graph/energy-consumption-dashboard", request, LONG_TIMEOUT)
 
 
 @router.get("/graph/neighbors", dependencies=[Depends(verify_allowed_roles)])

@@ -93,10 +93,10 @@ _DURATION_BUCKETS = [
 ]
 
 # Fenêtre de temps couverte par chaque période -- pas de flux temps réel dans
-# ce MVP (données de démo statiques), "temps_reel" et "jour" sont donc
-# traités de façon identique (dernières 24h).
+# ce MVP (données de démo statiques) : "temps_reel" = dernières 6h, complétées
+# par _top_up_recent_tickets pour que ces périodes courtes ne soient pas vides.
 _PERIODE_WINDOW = {
-    "temps_reel": timedelta(hours=24),
+    "temps_reel": timedelta(hours=6),
     "jour": timedelta(days=1),
     "semaine": timedelta(days=7),
     "mois": timedelta(days=30),
@@ -145,17 +145,7 @@ def _fetch_real_etages(zone: str) -> list[str]:
         return []
 
 
-def _seed_tickets_if_empty(db: Session, zone: str) -> None:
-    """Jeu de tickets de démonstration PAR ZONE : la première fois qu'une
-    zone (un projet BIM déjà ingéré ou non) est consultée dans ce cockpit,
-    elle reçoit son propre lot de tickets -- c'est ce qui permet au module de
-    s'adapter automatiquement à n'importe quel projet sans redéploiement."""
-    if db.query(MaintenanceTicketModel).filter(MaintenanceTicketModel.zone == zone).count() > 0:
-        return
-
-    # Seed déterministe PAR ZONE (le même nom de zone donne toujours le même
-    # jeu de démo, mais deux zones différentes ne sont jamais identiques).
-    rng = random.Random(f"maintenance-demo-{zone}")
+def _build_tickets(db: Session, zone: str, rng: random.Random, dates: list[datetime]) -> list[MaintenanceTicketModel]:
     references = db.query(MaintenanceSlaReferenceModel).all()
     by_metier: dict[str, list[MaintenanceSlaReferenceModel]] = {}
     for ref in references:
@@ -164,29 +154,29 @@ def _seed_tickets_if_empty(db: Session, zone: str) -> None:
     metiers = list(_METIER_WEIGHTS.keys())
     metier_weights = list(_METIER_WEIGHTS.values())
     etages = _fetch_real_etages(zone) or list(_FALLBACK_ETAGES)
-    # Poids aléatoires MAIS déterministes (même rng que le reste du seed) --
-    # on ne connaît pas à l'avance le nombre/nom des étages réels d'une zone,
-    # donc pas de liste de poids fixe possible ; ça garde quand même un
-    # contraste (certains étages plus chargés que d'autres) plutôt qu'une
-    # répartition parfaitement uniforme.
-    etage_weights = [rng.uniform(1, 3) for _ in etages]
+    # Poids par étage aléatoires MAIS déterministes par zone (nombre/noms des
+    # étages inconnus à l'avance) : contraste entre étages, pas d'uniformité.
+    etage_rng = random.Random(f"maintenance-demo-etages-{zone}")
+    etage_weights = [etage_rng.uniform(1, 3) for _ in etages]
     priorites = [p for p, _ in _PRIORITE_WEIGHTS]
     priorite_weights = [w for _, w in _PRIORITE_WEIGHTS]
 
     now = datetime.now(timezone.utc)
     tickets = []
-    for _ in range(TICKET_COUNT_PER_ZONE):
+    for date_ouverture in dates:
         metier = rng.choices(metiers, weights=metier_weights, k=1)[0]
         ref = rng.choice(by_metier[metier])
         etage = rng.choices(etages, weights=etage_weights, k=1)[0]
         priorite = rng.choices(priorites, weights=priorite_weights, k=1)[0]
         statut_workflow = "traite" if rng.random() < 0.75 else "en_cours"
 
-        date_ouverture = now - timedelta(days=rng.uniform(0, 180))
         date_cloture = None
         if statut_workflow == "traite":
             duree_reelle_h = float(ref.sla_hours) * rng.uniform(0.5, 1.8)
             date_cloture = date_ouverture + timedelta(hours=duree_reelle_h)
+            if date_cloture > now:
+                # Un ticket ne peut pas être clôturé dans le futur : encore en cours.
+                statut_workflow, date_cloture = "en_cours", None
 
         tickets.append(
             MaintenanceTicketModel(
@@ -204,9 +194,50 @@ def _seed_tickets_if_empty(db: Session, zone: str) -> None:
                 sla_hours=ref.sla_hours,
             )
         )
+    return tickets
 
-    db.add_all(tickets)
-    db.commit()
+
+def _seed_tickets_if_empty(db: Session, zone: str) -> None:
+    """Jeu de tickets de démonstration PAR ZONE : la première fois qu'une
+    zone (un projet BIM déjà ingéré ou non) est consultée dans ce cockpit,
+    elle reçoit son propre lot de tickets -- c'est ce qui permet au module de
+    s'adapter automatiquement à n'importe quel projet sans redéploiement.
+
+    Ensuite, à chaque consultation, on garantit des tickets RÉCENTS (voir
+    _top_up_recent_tickets) pour que les périodes courtes ne soient pas vides."""
+    if db.query(MaintenanceTicketModel).filter(MaintenanceTicketModel.zone == zone).count() == 0:
+        rng = random.Random(f"maintenance-demo-{zone}")
+        now = datetime.now(timezone.utc)
+        dates = [now - timedelta(days=rng.uniform(0, 180)) for _ in range(TICKET_COUNT_PER_ZONE)]
+        db.add_all(_build_tickets(db, zone, rng, dates))
+        db.commit()
+    _top_up_recent_tickets(db, zone)
+
+
+# (fenêtre en heures, nombre minimal de tickets ouverts dans cette fenêtre)
+_RECENT_MINIMUMS = [(6, 3), (24, 8), (24 * 7, 25)]
+
+
+def _top_up_recent_tickets(db: Session, zone: str) -> None:
+    """Démo statique : les dates du seed vieillissent, donc "Temps réel",
+    "Jour" et "Semaine" finiraient vides. Complète, si besoin, jusqu'à un
+    minimum de tickets récents par fenêtre (idempotent : rien à ajouter tant
+    que les minimums sont atteints)."""
+    now = datetime.now(timezone.utc)
+    rng = random.Random(f"maintenance-recent-{zone}-{now.isoformat()}")
+    dates: list[datetime] = []
+    for hours, minimum in _RECENT_MINIMUMS:
+        count = (
+            db.query(MaintenanceTicketModel)
+            .filter(MaintenanceTicketModel.zone == zone, MaintenanceTicketModel.date_ouverture >= now - timedelta(hours=hours))
+            .count()
+        ) + len(dates)
+        # Les dates déjà ajoutées pour une fenêtre plus courte comptent dans les plus larges.
+        for _ in range(max(0, minimum - count)):
+            dates.append(now - timedelta(hours=rng.uniform(0.1, hours)))
+    if dates:
+        db.add_all(_build_tickets(db, zone, rng, dates))
+        db.commit()
 
 
 def _get_or_create_settings(db: Session) -> MaintenanceSettingsModel:

@@ -54,3 +54,17 @@ def test_generate_metric_history_point_count_matches_days_times_points_per_day()
     )
     assert len(messages) == 7 * 24
     assert all(m.global_id == "eq-4" and m.metric == "temperature" for m in messages)
+
+
+def test_generate_metric_history_point_count_with_65_day_history():
+    # Régression pour le cockpit "Consommation énergétique" : les types
+    # d'équipement taggés energy_subcategory sont passés de 7 à 65 jours
+    # d'historique (equipment_simulation_catalog.json) -- confirme que
+    # generate_metric_history() suit bien ce paramètre sans plafond caché.
+    metric = MetricSpec(name="power_instant_kw", unit="kW", generator="occupancy_correlated",
+                         params={"base": 0.5, "peak": 4.5, "occupied_hours": [7, 20]})
+    messages = generate_metric_history(
+        global_id="eq-5", metric=metric, history_days=65, points_per_day=24,
+        now=NOW, rng=random.Random(0),
+    )
+    assert len(messages) == 65 * 24

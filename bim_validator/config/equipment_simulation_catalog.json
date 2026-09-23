@@ -172,16 +172,40 @@
     "compteur_thermique": {
       "label": "Compteur thermique",
       "predefined_types": {},
-      "keywords": ["compteur thermique", "compteur chaleur", "heat meter"],
+      "keywords": ["compteur thermique", "compteur chaleur", "heat meter", "sous-station", "reseau de chaleur", "réseau de chaleur", "chauffage urbain"],
       "metrics": [
         {
           "name": "energy_cumulative_kwh",
           "unit": "kWh",
           "generator": "cumulative_daily_profile",
           "params": { "daily_growth": 60.0, "peak_hours": [6, 22] }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "occupancy_correlated",
+          "params": { "base": 3.0, "peak": 12.0, "occupied_hours": [6, 22] }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "cvc",
+      "energy_type": "thermique"
+    },
+    "chaudiere_fioul": {
+      "label": "Chaudière fioul",
+      "predefined_types": { "IfcBoiler": [] },
+      "keywords": ["chaudiere fioul", "chaudière fioul", "fuel boiler", "cuve fioul", "chaudiere", "boiler"],
+      "metrics": [
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "occupancy_correlated",
+          "params": { "base": 2.0, "peak": 10.0, "occupied_hours": [6, 22] }
+        }
+      ],
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "cvc",
+      "energy_type": "fioul"
     },
     "compteur_eau": {
       "label": "Compteur d'eau",
@@ -208,9 +232,17 @@
           "generator": "occupancy_correlated",
           "params": { "base": 0.0, "peak": 1.0, "occupied_hours": [8, 19] },
           "value_labels": { "0": "Éteint", "1": "Allumé" }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.01, "peak": 0.06, "occupied_hours": [8, 19] }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "eclairage",
+      "energy_type": "electrique"
     },
     "store_brise_soleil": {
       "label": "Store / brise-soleil",
@@ -222,9 +254,17 @@
           "unit": "%",
           "generator": "occupancy_correlated",
           "params": { "base": 0.0, "peak": 100.0, "occupied_hours": [7, 19] }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.0, "peak": 0.03, "occupied_hours": [7, 19] }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "stores",
+      "energy_type": "electrique"
     },
     "ventilo_convecteur": {
       "label": "Ventilo-convecteur",
@@ -243,9 +283,17 @@
           "unit": "°C",
           "generator": "day_night_cycle",
           "params": { "base": 21.0, "amplitude": 1.0, "noise": 0.2 }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.02, "peak": 0.25, "occupied_hours": [7, 20] }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "cvc",
+      "energy_type": "electrique"
     },
     "borne_recharge": {
       "label": "Borne de recharge",
@@ -273,6 +321,12 @@
           "generator": "occupancy_correlated",
           "params": { "base": 0.0, "peak": 1.0, "occupied_hours": [8, 19] },
           "value_labels": { "0": "Éteint", "1": "Allumé" }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.02, "peak": 0.15, "occupied_hours": [8, 19] }
         }
       ],
       "history": { "days": 7, "points_per_day": 24 }
@@ -294,9 +348,17 @@
           "generator": "occupancy_correlated",
           "params": { "base": 0.0, "peak": 1.0, "occupied_hours": [7, 20] },
           "value_labels": { "0": "Arrêt", "1": "Marche" }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.5, "peak": 4.5, "occupied_hours": [7, 20] }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "cvc",
+      "energy_type": "electrique"
     },
     "groupe_froid": {
       "label": "Groupe froid / groupe de production",
@@ -308,9 +370,17 @@
           "unit": "°C",
           "generator": "day_night_cycle",
           "params": { "base": 7.0, "amplitude": 2.0, "noise": 0.3 }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "occupancy_correlated",
+          "params": { "base": 1.0, "peak": 15.0, "occupied_hours": [7, 20] }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "cvc",
+      "energy_type": "electrique"
     },
     "ventilateur": {
       "label": "Ventilateur / extracteur",
@@ -323,9 +393,17 @@
           "generator": "occupancy_correlated",
           "params": { "base": 0.0, "peak": 1.0, "occupied_hours": [7, 20] },
           "value_labels": { "0": "Arrêt", "1": "Marche" }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.05, "peak": 0.8, "occupied_hours": [7, 20] }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "cvc",
+      "energy_type": "electrique"
     },
     "pompe": {
       "label": "Pompe circulation",
@@ -338,9 +416,17 @@
           "generator": "occupancy_correlated",
           "params": { "base": 0.0, "peak": 1.0, "occupied_hours": [7, 20] },
           "value_labels": { "0": "Arrêt", "1": "Marche" }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.05, "peak": 0.75, "occupied_hours": [7, 20] }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "cvc",
+      "energy_type": "electrique"
     },
     "vanne_regulation": {
       "label": "Vanne de régulation",
@@ -571,9 +657,17 @@
           "generator": "sparse_event_log",
           "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.1 },
           "value_labels": { "0": "En ligne", "1": "Hors ligne" }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "day_night_cycle",
+          "params": { "base": 0.15, "amplitude": 0.03, "noise": 0.01 }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "it",
+      "energy_type": "electrique"
     },
     "routeur": {
       "label": "Routeur",
@@ -586,9 +680,17 @@
           "generator": "sparse_event_log",
           "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.1 },
           "value_labels": { "0": "En ligne", "1": "Hors ligne" }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "day_night_cycle",
+          "params": { "base": 0.08, "amplitude": 0.02, "noise": 0.005 }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "it",
+      "energy_type": "electrique"
     },
     "borne_wifi": {
       "label": "Borne Wi-Fi",
@@ -600,9 +702,17 @@
           "unit": "count",
           "generator": "occupancy_correlated",
           "params": { "base": 2.0, "peak": 25.0, "occupied_hours": [8, 19] }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "day_night_cycle",
+          "params": { "base": 0.015, "amplitude": 0.005, "noise": 0.002 }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "it",
+      "energy_type": "electrique"
     },
     "baie_brassage": {
       "label": "Baie de brassage",
@@ -615,9 +725,17 @@
           "generator": "sparse_event_log",
           "params": { "default_value": 0.0, "event_value": 1.0, "events_per_week": 0.05 },
           "value_labels": { "0": "OK", "1": "Défaut" }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "day_night_cycle",
+          "params": { "base": 1.5, "amplitude": 0.3, "noise": 0.05 }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "it",
+      "energy_type": "electrique"
     },
     "refrigerateur": {
       "label": "Réfrigérateur",
@@ -638,7 +756,9 @@
           "params": { "base": 0.15, "amplitude": 0.1, "noise": 0.02 }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "cuisine",
+      "energy_type": "electrique"
     },
     "cuisiniere": {
       "label": "Cuisinière / four",
@@ -651,9 +771,17 @@
           "generator": "occupancy_correlated",
           "params": { "base": 0.0, "peak": 1.0, "occupied_hours": [11, 20] },
           "value_labels": { "0": "Arrêt", "1": "Marche" }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.1, "peak": 4.5, "occupied_hours": [11, 21] }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "cuisine",
+      "energy_type": "electrique"
     },
     "four_micro_ondes": {
       "label": "Four micro-ondes",
@@ -666,9 +794,17 @@
           "generator": "occupancy_correlated",
           "params": { "base": 0.0, "peak": 1.0, "occupied_hours": [7, 20] },
           "value_labels": { "0": "Arrêt", "1": "Marche" }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.02, "peak": 1.0, "occupied_hours": [11, 21] }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "cuisine",
+      "energy_type": "electrique"
     },
     "raccord_hydraulique": {
       "label": "Raccord / canalisation (réseau hydraulique passif)",
@@ -688,6 +824,22 @@
       ],
       "history": { "days": 7, "points_per_day": 24 }
     },
+    "ascenseur": {
+      "label": "Ascenseur",
+      "predefined_types": { "IfcTransportElement": [] },
+      "keywords": ["ascenseur", "elevator", "monte-charge", "escalator"],
+      "metrics": [
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.3, "peak": 3.5, "occupied_hours": [7, 20] }
+        }
+      ],
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "ascenseurs",
+      "energy_type": "electrique"
+    },
     "cvc_generic": {
       "label": "Équipement CVC (générique)",
       "predefined_types": {},
@@ -698,9 +850,17 @@
           "unit": "°C",
           "generator": "day_night_cycle",
           "params": { "base": 21.0, "amplitude": 1.5, "noise": 0.5 }
+        },
+        {
+          "name": "power_instant_kw",
+          "unit": "kW",
+          "generator": "occupancy_correlated",
+          "params": { "base": 0.05, "peak": 0.5, "occupied_hours": [7, 20] }
         }
       ],
-      "history": { "days": 7, "points_per_day": 24 }
+      "history": { "days": 65, "points_per_day": 24 },
+      "energy_subcategory": "cvc",
+      "energy_type": "electrique"
     },
     "electricity_generic": {
       "label": "Équipement électrique (générique)",

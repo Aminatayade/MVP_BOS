@@ -22,7 +22,7 @@ espace de ce type.
 
 from __future__ import annotations
 
-import random
+import unicodedata
 from typing import TYPE_CHECKING
 
 from application.equipment_simulation_service import EquipmentSimulationService
@@ -37,20 +37,39 @@ if TYPE_CHECKING:
     from domain.ports import BimGraphRepositoryPort
 
 SENSOR_EQUIPMENT_TYPE = "detecteur_presence"
-SPACE_TYPES = ["salle_reunion", "poste_travail", "bulle"]
-SPACE_TYPE_WEIGHTS = [0.35, 0.45, 0.20]
+
+# Classification par MOTS-CLÉS sur le nom réel de la pièce, pas aléatoire --
+# une maquette de bureaux et une maquette résidentielle (ex: NBU Duplex :
+# Bedroom/Bathroom/Kitchen/Living Room/Foyer/Hallway) n'ont pas les mêmes
+# pièces, donc pas la peine d'inventer un classement pour ce qui n'existe
+# clairement pas dans le bâtiment ingéré. Une pièce qui ne matche aucun
+# mot-clé (chambre, salle de bain, cuisine, couloir...) reçoit `None` --
+# comptée dans "Tout type d'espace", jamais dans un des 3 filtres métier
+# (spec client : uniquement salle de réunion / poste de travail / bulle).
+_SPACE_TYPE_KEYWORDS: dict[str, list[str]] = {
+    "salle_reunion": ["salle de reunion", "meeting room", "conference", "boardroom", "reunion"],
+    "poste_travail": ["poste de travail", "workstation", "open space", "openspace", "bureau", "office", "desk"],
+    "bulle": ["bulle", "phone booth", "phonebooth", "focus room", "quiet room", "cabine"],
+}
+
+
+def _normalize(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text.strip().lower())
+    return normalized.encode("ascii", "ignore").decode("ascii")
 
 
 def _sensor_global_id(room_global_id: str) -> str:
     return f"synthetic-presence::{room_global_id}"
 
 
-def _assign_space_type(room_global_id: str) -> str:
-    # Seedé par le global_id de la Room (pas un rng partagé) : stable d'un
-    # (re)provisionnement à l'autre, indépendant de l'ordre de traitement
-    # des pièces.
-    rng = random.Random(f"space-type::{room_global_id}")
-    return rng.choices(SPACE_TYPES, weights=SPACE_TYPE_WEIGHTS, k=1)[0]
+def _assign_space_type(room_name: str | None) -> str | None:
+    if not room_name:
+        return None
+    haystack = _normalize(room_name)
+    for space_type, keywords in _SPACE_TYPE_KEYWORDS.items():
+        if any(_normalize(keyword) in haystack for keyword in keywords):
+            return space_type
+    return None
 
 
 class OccupancyProvisioningService:
@@ -69,7 +88,7 @@ class OccupancyProvisioningService:
         escaped_zone = _cypher_escape(self._zone)
         rooms = (
             self._graph_repository.query_cypher(
-                f"MATCH (r:Room {{zone: '{escaped_zone}'}}) RETURN r.global_id AS global_id"
+                f"MATCH (r:Room {{zone: '{escaped_zone}'}}) RETURN r.global_id AS global_id, r.name AS name"
             ).get("result")
             or []
         )
@@ -97,7 +116,7 @@ class OccupancyProvisioningService:
         for room in missing_rooms:
             room_gid = room["global_id"]
             sensor_gid = _sensor_global_id(room_gid)
-            space_type = _assign_space_type(room_gid)
+            space_type = _assign_space_type(room.get("name"))
 
             node = EquipmentNode(
                 global_id=sensor_gid,
@@ -117,16 +136,21 @@ class OccupancyProvisioningService:
             # `_merge_equipment_node_query` ne connaît pas `simulated`/
             # `space_type` (pas des champs d'EquipmentNode, partagé avec
             # l'ingestion réelle -- ne pas y toucher) : posés séparément.
+            # `space_type` n'est posé QUE s'il a été déterminé -- une pièce
+            # dont le nom ne correspond à aucun mot-clé (chambre, cuisine...)
+            # garde la propriété absente plutôt qu'une valeur inventée,
+            # voir _assign_space_type.
             escaped_sensor_gid = _cypher_escape(sensor_gid)
-            escaped_space_type = _cypher_escape(space_type)
+            space_type_clause = f", e.space_type = '{_cypher_escape(space_type)}'" if space_type else ""
             commands.append(
                 f"MATCH (e:Equipment {{global_id: '{escaped_sensor_gid}', zone: '{escaped_zone}'}}) "
-                f"SET e.simulated = true, e.space_type = '{escaped_space_type}'"
+                f"SET e.simulated = true{space_type_clause}"
             )
-            commands.append(
-                f"MATCH (r:Room {{global_id: '{_cypher_escape(room_gid)}', zone: '{escaped_zone}'}}) "
-                f"SET r.space_type = '{escaped_space_type}'"
-            )
+            if space_type:
+                commands.append(
+                    f"MATCH (r:Room {{global_id: '{_cypher_escape(room_gid)}', zone: '{escaped_zone}'}}) "
+                    f"SET r.space_type = '{_cypher_escape(space_type)}'"
+                )
             commands.append(_merge_edge_query("LOCATED_IN", sensor_gid, room_gid, zone=self._zone))
 
         self._graph_repository.execute_cypher_batch(commands, batch_size=500)

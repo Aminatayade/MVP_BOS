@@ -56,6 +56,14 @@ ROOM_TYPLOGY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "living_room": ("salon", "living room", "sejour", "séjour"),
 }
 
+# Seule source des types IFC réellement scannés (voir la boucle
+# d'extraction dans _extract_equipment_nodes_and_edges) -- un type IFC
+# absent d'ici n'est JAMAIS créé en nœud Equipment, quel que soit son
+# nommage ou ses mots-clés dans le catalogue de simulation (classify() ne
+# reçoit jamais l'élément si son type IFC n'apparaît dans aucun set
+# ci-dessous). Ajouter un equipment_type au catalogue sans ajouter son type
+# IFC ici le rend invisible en pratique (cas vécu avec chaudiere_fioul/
+# ascenseur, voir equipment_simulation_catalog.json).
 EQUIPMENT_CATEGORIES: dict[str, set[str]] = {
     "cvc": {
         "IfcFlowTerminal",
@@ -65,6 +73,7 @@ EQUIPMENT_CATEGORIES: dict[str, set[str]] = {
         "IfcFlowFitting",
         "IfcAirTerminal",
         "IfcUnitaryEquipment",
+        "IfcBoiler",  # chaudière fioul (catalogue: chaudiere_fioul)
     },
     "electricity": {
         "IfcElectricAppliance",
@@ -74,6 +83,7 @@ EQUIPMENT_CATEGORIES: dict[str, set[str]] = {
         "IfcElectricDistributionPoint",
         "IfcCableCarrierSegment",
         "IfcCableSegment",
+        "IfcTransportElement",  # ascenseurs (catalogue: ascenseur)
     },
     "security": {
         "IfcAlarm",

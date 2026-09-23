@@ -237,14 +237,19 @@ services:
       # qu'elle détecte AU DÉMARRAGE (visible comme "MAXRAM=2.00GB" dans les
       # logs) -- une maquette volumineuse (ex: ~20 000 équipements dans une
       # même zone) peut alors provoquer un OutOfMemoryError: Java heap space
-      # même quand le conteneur a, lui, largement assez de mémoire
-      # disponible. Remonté de 4G à 6G : un nouveau OutOfMemoryError: Java
-      # heap space constaté à 4G avec le jeu de données accumulé (zone Bati6,
-      # ~6000 équipements + tout leur historique simulé) -- 6G laisse encore
-      # de la marge pour bim_api et les autres services sur les 8 Go alloués
-      # à Docker Desktop (usage observé des autres conteneurs : quelques
-      # centaines de Mo au total).
-      - ARCADEDB_OPTS_MEMORY=-Xms1G -Xmx6G
+      # Redescendu de 6G à 4G (20/09) : sur la machine bare-metal actuelle
+      # (15 Go RAM total, PAS du Docker Desktop avec VM dédiée comme le
+      # contexte du commentaire précédent), un plafond à 6G ne laissait plus
+      # assez de marge à l'hôte -- crash en boucle d'ArcadeDB observé
+      # (restartCount 0->8 en quelques minutes) pendant le chargement d'une
+      # maquette clinic (ARCHI+HVAC+ELEC+MEP) dans le navigateur (ThatOpen),
+      # avec le swap déjà à moitié plein. ATTENTION : un vrai
+      # "OutOfMemoryError: Java heap space" avait justifié la hausse à 6G
+      # avant ça (zone à ~6000 équipements + historique simulé) -- si ce cas
+      # se represente avec 4G, remonter le plafond ET réduire le volume de
+      # données de test accumulées (voir DELETE /graph/zone) plutôt que de
+      # remonter indéfiniment le plafond sans jamais nettoyer.
+      - ARCADEDB_OPTS_MEMORY=-Xms1G -Xmx4G
     volumes:
       # Sans ceci, chaque recréation du conteneur (rebuild, redémarrage machine)
       # repartait d'une base vide : les maquettes déjà ingérées disparaissaient.
