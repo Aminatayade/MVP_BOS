@@ -61,15 +61,15 @@
     "list": [
       {
         "current": {
-          "text": "Bedroom 2 (Level 2) #1",
-          "value": "0BTBFw6f90Nfh9rP1dlXrb"
+          "text": "",
+          "value": ""
         },
         "includeAll": false,
         "label": "Pièce / Étage",
         "multi": true,
         "name": "location",
         "options": [],
-        "query": "Bedroom 2 (Level 2) #1 : 0BTBFw6f90Nfh9rP1dlXrb,Bedroom 2 (Level 2) #2 : 0BTBFw6f90Nfh9rP1dl_39,Hallway (Level 2) #1 : 0BTBFw6f90Nfh9rP1dlXri,Foyer (Level 1) #1 : 0BTBFw6f90Nfh9rP1dl_3Q,Foyer (Level 1) #2 : 0BTBFw6f90Nfh9rP1dlXrr,Hallway (Level 2) #2 : 0BTBFw6f90Nfh9rP1dl_3G,Bedroom 1 (Level 2) #1 : 0BTBFw6f90Nfh9rP1dlXrc,Bedroom 1 (Level 2) #2 : 0BTBFw6f90Nfh9rP1dl_3A,Living Room (Level 1) #1 : 0BTBFw6f90Nfh9rP1dl_CZ,Bathroom 2 (Level 2) #1 : 0BTBFw6f90Nfh9rP1dlXre,Living Room (Level 1) #2 : 0BTBFw6f90Nfh9rP1dlXr2,Bathroom 1 (Level 1) #1 : 0BTBFw6f90Nfh9rP1dl_3P,Kitchen (Level 1) #1 : 0BTBFw6f90Nfh9rP1dl_3S,Kitchen (Level 1) #2 : 0BTBFw6f90Nfh9rP1dlXr$,Bathroom 2 (Level 2) #2 : 0BTBFw6f90Nfh9rP1dl_3C,Bathroom 1 (Level 1) #2 : 0BTBFw6f90Nfh9rP1dlXru,Utility (Level 2) #1 : 2gRXFgjRn2HPE$YoDLX3FV,Stair (Level 1) : 10mjSDZJj9gPS2PrQaxa3z,Room (Level 1) : 10mjSDZJj9gPS2PrQaxa4o,Utility (Level 2) #2 : 2gRXFgjRn2HPE$YoDLX3FC,Roof (Roof) : 0pNy6pOyf7JPmXRLgxs3sW,Level 2 : 1xS3BCk291UvhgP2dvNMQJ,Roof : 1xS3BCk291UvhgP2dvNtSE,Level 1 : 1xS3BCk291UvhgP2dvNMKI,T/FDN : 1xS3BCk291UvhgP2dvNsgp",
+        "query": "",
         "type": "custom"
       },
       {
@@ -98,25 +98,19 @@
       },
       {
         "current": {
-          "text": "NBU",
-          "value": "NBU"
+          "text": "",
+          "value": ""
         },
         "hide": 2,
         "name": "zone",
-        "options": [
-          {
-            "selected": true,
-            "text": "NBU",
-            "value": "NBU"
-          }
-        ],
-        "query": "NBU",
+        "options": [],
+        "query": "",
         "type": "constant"
       }
     ]
   },
   "time": {
-    "from": "now-1h",
+    "from": "now-7d",
     "to": "now"
   },
   "timezone": "browser",
