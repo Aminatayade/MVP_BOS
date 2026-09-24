@@ -1,0 +1,22 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "BOS - base applicative (tickets, cockpits, réglages)",
+      "Group": "BOS Light",
+      "Host": "postgres-app",
+      "Port": 5432,
+      "MaintenanceDB": "bos_app_db",
+      "Username": "bos_app_user",
+      "SSLMode": "prefer"
+    },
+    "2": {
+      "Name": "BOS - base Keycloak (identité)",
+      "Group": "BOS Light",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "bos_db",
+      "Username": "bos_user",
+      "SSLMode": "prefer"
+    }
+  }
+}

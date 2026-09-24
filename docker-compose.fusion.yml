@@ -413,6 +413,38 @@ services:
   # besoin de passer par l'API Gateway) avec l'utilisateur ArcadeDB dédié
   # "grafana" (lecture seule, cf. ArcadeDB server-users).
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # pgAdmin -- OUTIL de consultation des bases Postgres (optionnel).
+  # Non démarré par défaut (profil "tools") : `docker compose -f
+  # docker-compose.fusion.yml --profile tools up -d pgadmin`, puis
+  # http://localhost:5050. Lié à 127.0.0.1 uniquement. Connexion :
+  # admin@admin.com + le contenu de secrets/postgres_app_password.txt (aucun
+  # mot de passe en clair dans ce fichier). Les deux serveurs Postgres sont
+  # préenregistrés (pgadmin/servers.json) : pgAdmin demande leur mot de passe
+  # (secrets/postgres_app_password.txt et secrets/postgres_password.txt) à la
+  # première ouverture.
+  # ---------------------------------------------------------------------------
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: bos_pgadmin
+    profiles: ["tools"]
+    restart: unless-stopped
+    secrets:
+      - postgres_app_password
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD_FILE: /run/secrets/postgres_app_password
+    ports:
+      - "127.0.0.1:5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
+    depends_on:
+      - postgres
+      - postgres-app
+    networks:
+      - fusion_network
+
   grafana:
     image: grafana/grafana-oss:latest
     container_name: bos_grafana
@@ -461,6 +493,7 @@ volumes:
   postgres_app_data:
   arcadedb_data:
   grafana_data:
+  pgadmin_data:
 
 # -----------------------------------------------------------------------------
 # SECRETS DOCKER -- un fichier en clair par mot de passe (jamais committé,
