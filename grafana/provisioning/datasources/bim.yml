@@ -1,0 +1,11 @@
+# Datasource Infinity vers bim_api (réseau Docker interne, sans authentification :
+# bim_api n'est pas exposé sur l'hôte). Même uid que celui référencé par le
+# dashboard exporté -- ne pas le changer sans mettre à jour le JSON.
+apiVersion: 1
+datasources:
+  - name: ArcadeDB BIM
+    uid: cfvqq4gcv8lxca
+    type: yesoreyeram-infinity-datasource
+    access: proxy
+    url: http://bim_api:8000
+    isDefault: true

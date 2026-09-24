@@ -1,0 +1,11 @@
+apiVersion: 1
+providers:
+  - name: bos-light
+    folder: ''
+    type: file
+    # allowUiUpdates : GrafanaDashboardSyncAdapter (bim_api) réécrit ce
+    # dashboard via l'API pour caler ses variables sur la zone active --
+    # refusé sans cette option sur un dashboard provisionné.
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

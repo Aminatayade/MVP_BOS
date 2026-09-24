@@ -436,6 +436,12 @@ services:
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
     volumes:
       - grafana_data:/var/lib/grafana
+      # Datasource + dashboard "BOS Light - Equipement (demo)" provisionnés depuis
+      # le dépôt : sans ça, une machine neuve (ex: celle du tuteur) affiche
+      # "Dashboard not found" dans l'onglet Supervision (le dashboard n'existait
+      # que dans le volume grafana_data de la machine d'origine).
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
       # Comme Keycloak : le navigateur doit atteindre Grafana directement pour
       # afficher l'iframe (contrairement à ArcadeDB Studio/NATS monitoring,
