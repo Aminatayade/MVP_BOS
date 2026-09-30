@@ -347,6 +347,13 @@ services:
     # Pas de "ports:" : uniquement joignable via le réseau Docker interne
     # (résolution DNS "bim_api"), donc uniquement via l'API Gateway.
     entrypoint: ["python", "api_server.py"]
+    volumes:
+      # Fichier de démonstration "consommation en direct" (voir
+      # publish_values_file.py, lancé avec `docker exec bos_bim_api ...`) :
+      # lecture seule, un simple redémarrage du conteneur n'est même pas
+      # nécessaire pour voir un nouveau contenu, le script relit le fichier
+      # à chaque lancement.
+      - ./live:/app/live:ro
     networks:
       - fusion_network
 

@@ -159,10 +159,22 @@ class ArcadeDbTimeseriesAdapter(TimeseriesRepositoryPort):
         if end is not None:
             conditions.append(f"ts <= {int(end.timestamp() * 1000)}")
 
+        # ORDER BY ts DESC (pas ASC) : avec un équipement qui a beaucoup plus
+        # de points que `limit` (65 jours d'historique = ~1560 points pour
+        # une lecture horaire, contre un limit=50 typique du popup de
+        # télémétrie), trier ASC tronquait sur les lignes les plus
+        # ANCIENNES et perdait silencieusement tous les points récents --
+        # bug constaté en pratique : le popup affichait "Fermé" (valeur
+        # courante, lue séparément par query_latest) alors que son propre
+        # graphique d'historique restait bloqué sur des points vieux de
+        # plusieurs semaines. Même raisonnement déjà appliqué ailleurs dans
+        # ce projet pour /graph/location-readings (api_server.py). On
+        # retrie ASC en Python après coup : l'appelant (popup de
+        # télémétrie) affiche un historique chronologique croissant.
         command = (
             "SELECT ts, metric, value, unit, quality, source FROM "
             f"{TIMESERIES_TYPE_NAME} WHERE {' AND '.join(conditions)} "
-            f"ORDER BY ts ASC LIMIT {int(limit)}"
+            f"ORDER BY ts DESC LIMIT {int(limit)}"
         )
         payload = {"language": "sql", "command": command}
         response = self._session.post(self._command_endpoint, json=payload, timeout=self._timeout_seconds)
@@ -176,7 +188,9 @@ class ArcadeDbTimeseriesAdapter(TimeseriesRepositoryPort):
         rows = response.json().get("result", [])
         # ArcadeDB ajoute un champ interne "@props" (métadonnées de type) à
         # chaque ligne TIMESERIES : bruit à retirer avant de renvoyer au métier.
-        return [{k: v for k, v in row.items() if not k.startswith("@")} for row in rows]
+        cleaned = [{k: v for k, v in row.items() if not k.startswith("@")} for row in rows]
+        cleaned.reverse()
+        return cleaned
 
     def query_latest(
         self,
