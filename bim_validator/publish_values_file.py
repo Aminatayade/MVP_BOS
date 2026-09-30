@@ -69,7 +69,7 @@ def main() -> None:
     # --- Étape 1 : lire le fichier ---------------------------------------
     raw, error = load_values_file(args.fichier)
     if error:
-        print(f"❌ {error}")
+        print(f" {error}")
         sys.exit(1)
 
     # --- Étape 2 : valider les lignes -------------------------------------
@@ -83,9 +83,9 @@ def main() -> None:
 
     parsed = parse_values(raw, allowed_metrics)
     for err in parsed.errors:
-        print(f"⚠️  {err}")
+        print(f"  {err}")
     if not parsed.zone:
-        print("❌ Fichier sans zone exploitable, rien à publier.")
+        print("Fichier sans zone exploitable, rien à publier.")
         sys.exit(1)
     if not parsed.values:
         print("Aucune ligne valide à publier.")
@@ -97,7 +97,7 @@ def main() -> None:
     )
     database = resolve_database_for_zone(repo_factory, parsed.zone, for_write=False)
     if database is None:
-        print(f"❌ Zone '{parsed.zone}' inconnue.")
+        print(f" Zone '{parsed.zone}' inconnue.")
         sys.exit(1)
     repo = repo_factory(database)
 
@@ -153,7 +153,7 @@ def main() -> None:
 
     adapter = NatsJetStreamAdapter(servers=nats_servers, user=nats_user, password=nats_password)
     adapter.publish_many(subject, payloads)
-    print(f"\n✅ {len(payloads)} valeur(s) publiée(s) sur '{subject}'.")
+    print(f"\n {len(payloads)} valeur(s) publiée(s) sur '{subject}'.")
 
 
 if __name__ == "__main__":
