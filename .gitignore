@@ -40,6 +40,9 @@ dist-ssr/
 Thumbs.db
 .vscode/
 .idea/
+# Maquettes BIM locales
+*.ifc
+*.ifc.bak
 
 # ==========================================
 # 5. Sauvegardes locales (scripts/backup-volumes.ps1)
