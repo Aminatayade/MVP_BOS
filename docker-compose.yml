@@ -113,10 +113,23 @@ services:
       - KEYCLOAK_INTERNAL_URL=http://keycloak:8080/realms/bos-realm
       # URL externe : pour l'authentification Swagger depuis le navigateur de l'utilisateur
       - KEYCLOAK_EXTERNAL_URL=http://localhost:8080/realms/bos-realm
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - OTEL_EXPORTER_OTLP_INSECURE=true
+      - OTEL_SERVICE_NAME=bos-api-gateway
     depends_on:
       - keycloak
       - postgres
       - postgres-app
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: bos_jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:16686:16686"
+      - "127.0.0.1:4317:4317"
 
   # ---------------------------------------------------------------------------
   # INTERFACE UTILISATEUR & WEB APP (REACT / VITE)

@@ -152,6 +152,9 @@ services:
       NATS_URL: nats://nats:4222
       NATS_USER: ${NATS_USER:-bos_admin}
       NATS_PASSWORD_FILE: /run/secrets/nats_password
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      OTEL_SERVICE_NAME: bos-api-gateway
     depends_on:
       - keycloak
       - postgres
@@ -380,6 +383,9 @@ services:
       - NATS_URL=nats://nats:4222
       - NATS_USER=${NATS_USER:-bos_admin}
       - NATS_PASSWORD_FILE=/run/secrets/nats_password
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4317}
+      - OTEL_EXPORTER_OTLP_INSECURE=${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      - OTEL_SERVICE_NAME=bos-timeseries-api
     # Pas de "ports:" : idem bim_api, joignable uniquement via le réseau interne.
     entrypoint: ["uvicorn", "timeseries_api:app", "--host", "0.0.0.0", "--port", "8001"]
     networks:
@@ -488,6 +494,35 @@ services:
       - "3000:3000"
     depends_on:
       - arcadedb
+    networks:
+      - fusion_network
+
+  # Jaeger reçoit les traces OTLP des services backend et expose son interface
+  # de recherche uniquement sur la machine hôte.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: bos_jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:16686:16686"
+      - "127.0.0.1:4317:4317"
+    networks:
+      - fusion_network
+
+  # Serveur MCP en lecture seule : permet à un agent compatible MCP
+  # d'interroger Jaeger sans accéder aux autres services.
+  observability-mcp:
+    build: ./observability-mcp
+    container_name: bos_observability_mcp
+    restart: unless-stopped
+    environment:
+      JAEGER_URL: http://jaeger:16686
+    ports:
+      - "127.0.0.1:8081:8081"
+    depends_on:
+      - jaeger
     networks:
       - fusion_network
 

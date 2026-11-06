@@ -15,10 +15,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
+
 from domain.entities import UnifiedMessage
 from domain.ports import MessageQueuePort, TimeseriesRepositoryPort
 
 REQUIRED_FIELDS = ("global_id", "timestamp", "metric", "value")
+_tracer = trace.get_tracer("bos.timeseries.ingestion")
 
 
 class TimeseriesIngestionService:
@@ -30,23 +34,32 @@ class TimeseriesIngestionService:
         self._queue.subscribe(subject, self._handle_message)
 
     def _handle_message(self, raw: dict) -> None:
-        message = _parse_unified_message(raw)
-        if message is None:
-            print(f"⚠️  Message rejeté (format invalide) : {raw}")
-            return
+        with _tracer.start_as_current_span("timeseries.ingest") as span:
+            message = _parse_unified_message(raw)
+            if message is None:
+                span.set_status(Status(StatusCode.ERROR, "invalid telemetry message"))
+                span.add_event("message.rejected", {"reason": "invalid_format"})
+                print(f"⚠️  Message rejeté (format invalide) : {raw}")
+                return
 
-        if not self._repository.equipment_exists(message.global_id):
+            span.set_attribute("telemetry.global_id", message.global_id)
+            span.set_attribute("telemetry.metric", message.metric)
+            span.set_attribute("telemetry.source", message.source)
+            if not self._repository.equipment_exists(message.global_id):
+                span.set_status(Status(StatusCode.ERROR, "unknown equipment"))
+                span.add_event("message.rejected", {"reason": "unknown_equipment"})
+                print(
+                    f"⚠️  Message rejeté : global_id '{message.global_id}' inconnu du graphe BIM "
+                    f"(aucun Equipment correspondant)."
+                )
+                return
+
+            self._repository.write_point(message)
+            span.add_event("measurement.persisted")
             print(
-                f"⚠️  Message rejeté : global_id '{message.global_id}' inconnu du graphe BIM "
-                f"(aucun Equipment correspondant)."
+                f"✅ Point écrit : global_id={message.global_id} metric={message.metric} "
+                f"value={message.value} ts={message.timestamp.isoformat()}"
             )
-            return
-
-        self._repository.write_point(message)
-        print(
-            f"✅ Point écrit : global_id={message.global_id} metric={message.metric} "
-            f"value={message.value} ts={message.timestamp.isoformat()}"
-        )
 
 
 def _parse_unified_message(raw: dict) -> UnifiedMessage | None:

@@ -28,6 +28,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+from observability import instrument_fastapi
+
 from adapters.arcadedb_ts_adapter import ArcadeDbTimeseriesAdapter
 from adapters.json_equipment_catalog_adapter import JsonEquipmentCatalogAdapter
 from application.live_simulation_service import DEFAULT_SUBJECT, LivePublisher, run_zone
@@ -135,6 +137,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="BOS TimeSeries API", lifespan=lifespan)
+instrument_fastapi(app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

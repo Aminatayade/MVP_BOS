@@ -5,8 +5,8 @@
     { "equipement": "Gaine circulaire:VEN_GAI_Gaine circulaire:5939283", "metrique": "power_instant_kw", "valeur": 4.5 },
     { "equipement": "Canalisation:ARC-CAN_Tuyaux:8051296", "metrique": "debit_instant_m3h", "valeur": 120.0 },
     { "equipement": "SAN_APS_Chauffe-eau instantané:MCX3:6358042", "metrique": "temperature", "valeur": 65.0 },
-    { "equipement": "RN 40210 Robinet de jardin hors gel:DN 20 1:6395433", "metrique": "state", "valeur": 0 },
-    { "equipement": "SAN_PIE_VANNE_OBLIQUE_52XX:Volant Vert:6106117", "metrique": "debit_instant_m3h", "valeur": 3.8}
+    { "equipement": "RN 40210 Robinet de jardin hors gel:DN 20 1:6395433", "metrique": "state", "valeur": 1 },
+    { "equipement": "SAN_PIE_VANNE_OBLIQUE_52XX:Volant Vert:6106117", "metrique": "debit_instant_m3h", "valeur": 5.8}
 
   ]
 }

@@ -24,6 +24,8 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
+from observability import instrument_fastapi
+
 # Imports des modules BDD et modèles locaux
 from database import engine, get_db, Base
 from models import PhaseModel, CockpitModel
@@ -39,6 +41,7 @@ from security import get_current_user, verify_allowed_roles, verify_execution_al
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="BOS Light - API Gateway")
+instrument_fastapi(app)
 
 # Configuration du CORS pour autoriser les deux frontends React (Vite) :
 # BOS Configurateur (5173) et BOS Exécution (5174), tous deux servis par
