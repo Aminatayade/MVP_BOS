@@ -17,7 +17,7 @@ seul `git clone` + `docker compose up` suffit pour faire tourner l'ensemble.
 
 ## 📐 Architecture globale
 
-L'application repose sur **11 conteneurs** interconnectés :
+L'application repose sur **12 conteneurs** interconnectés :
 
 | Service | Rôle | Port hôte |
 | :--- | :--- | :--- |
@@ -32,11 +32,39 @@ L'application repose sur **11 conteneurs** interconnectés :
 | **arcadedb** | Graphe BIM (bâtiments/étages/pièces/équipements) + moteur time-series | `127.0.0.1:2480`/`2424`/`8582` (admin/debug) |
 | **nats** | Canal d'ingestion JetStream (flux temps réel) | `4222`, monitoring `127.0.0.1:8222` |
 | **seaweedfs** | Stockage objet des maquettes IFC validées | `127.0.0.1:9333` (admin/debug) |
+| **jaeger** | Collecte et recherche des traces OpenTelemetry | `127.0.0.1:16686` |
+| **observability-mcp** | Outils MCP en lecture seule pour interroger Jaeger | `127.0.0.1:8081` |
 
 `bim_api` et `timeseries_api` n'ont **aucun port publié sur l'hôte** : ils ne sont
 atteignables que via le réseau Docker interne, donc uniquement via les routes
 `/api/bim/*` de l'API Gateway (`bim_proxy.py`), qui applique le même RBAC Keycloak que le
 reste de l'API.
+
+### Observabilité OpenTelemetry / Jaeger
+
+Les services `api-gateway` et `timeseries_api` exportent leurs traces au format
+OTLP gRPC vers Jaeger. L'API de télémétrie crée également une span
+`timeseries.ingest` pour chaque mesure reçue, avec le résultat de validation et
+les attributs non sensibles `global_id`, `metric` et `source`.
+
+Le serveur `observability-mcp` expose une connexion MCP HTTP sur
+`http://127.0.0.1:8081/mcp`. Ses outils sont strictement en lecture seule :
+`list_services`, `search_traces` et `get_trace`. Il interroge l'API Jaeger
+interne (`http://jaeger:16686`) et n'est pas accessible depuis le réseau local.
+La configuration du workspace VS Code se trouve dans
+[.vscode/mcp.json](.vscode/mcp.json) ; après le démarrage de la stack, rechargez
+la liste des serveurs MCP dans VS Code si nécessaire.
+
+Lancer la stack complète puis ouvrir l'interface Jaeger :
+
+```bash
+docker compose -f docker-compose.fusion.yml up -d --build
+# http://localhost:16686
+```
+
+Sélectionner ensuite `bos-api-gateway` ou `bos-timeseries-api`
+dans le menu **Service**. Le endpoint OTLP peut être remplacé via
+`OTEL_EXPORTER_OTLP_ENDPOINT` dans `.env`.
 
 ### Fonctionnalités
 
@@ -184,3 +212,4 @@ bos-light-mvp
 Le backend (`api-gateway/`, `bim_validator/`, `keycloak/`) est **partagé** et reste à la
 racine — seuls les deux frontends sont rangés chacun dans leur propre sous-dossier
 (`web-app-configuration/` et `web-app-execution/`).
+# MVP_BOS
